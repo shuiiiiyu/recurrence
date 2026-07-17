@@ -36,7 +36,8 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--max_val_samples", type=int, default=max_val_samples)
 
     p.add_argument("--batch_size", type=int, default=batch_size)
-    p.add_argument("--max_steps", type=int, default=max_steps)
+    p.add_argument("--epochs", type=float, default=epochs, help="Number of passes over the training set")
+    p.add_argument("--max_steps", type=int, default=max_steps, help="Manual override for total optimizer steps")
     p.add_argument("--lr", type=float, default=learning_rate)
     p.add_argument("--weight_decay", type=float, default=weight_decay)
     p.add_argument("--grad_clip", type=float, default=grad_clip)

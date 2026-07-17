@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import random
 from argparse import Namespace
 from typing import Iterable, Tuple
@@ -128,11 +129,21 @@ def train(args: Namespace) -> None:
     print(cfg)
     wandb_run = maybe_init_wandb(args, cfg, n_params)
 
+    steps_per_epoch = math.ceil(len(train_ds) / args.batch_size)
+    if args.max_steps is not None:
+        total_steps = args.max_steps
+        effective_epochs = total_steps / steps_per_epoch
+        print(f"steps_per_epoch={steps_per_epoch} total_steps={total_steps} effective_epochs={effective_epochs:.3f} (max_steps override)")
+    else:
+        total_steps = math.ceil(args.epochs * steps_per_epoch)
+        effective_epochs = total_steps / steps_per_epoch
+        print(f"steps_per_epoch={steps_per_epoch} epochs={args.epochs} total_steps={total_steps} effective_epochs={effective_epochs:.3f}")
+
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     train_iter = cycle(train_loader)
     model.train()
 
-    for step in range(1, args.max_steps + 1):
+    for step in range(1, total_steps + 1):
         batch = next(train_iter)
         input_ids = batch["input_ids"].to(args.device)
         labels = batch["labels"].to(args.device)

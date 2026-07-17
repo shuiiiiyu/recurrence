@@ -28,6 +28,7 @@ data:
 
 train:
   batch_size: 64
-  max_steps: 2000
+  epochs: 1
+  max_steps: null
   lr: 0.0003
   weight_decay: 0.01

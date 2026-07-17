@@ -26,7 +26,8 @@ train_samples = 20000
 val_samples = 2000
 
 batch_size = 64
-max_steps = 2000
+epochs = 1
+max_steps = None
 learning_rate = 3e-4
 weight_decay = 0.01
 grad_clip = 1.0
