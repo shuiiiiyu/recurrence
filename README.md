@@ -98,6 +98,7 @@ scripts/train_ratio1.sh
 scripts/train_ratiolt1.sh
 scripts/train_permutation_full.sh
 scripts/train_permutation_debug.sh
+scripts/overfit_permutation_train_eval.py
 scripts/train_sudoku_debug.sh
 ```
 Override parameters from the command line, for example:
@@ -105,4 +106,7 @@ Override parameters from the command line, for example:
 ```bash
 scripts/train_ratio1.sh --num_layers 24 --d_model 384 --num_heads 6 --epochs 1
 ```
+
+Use `scripts/overfit_permutation_train_eval.py` for tiny-sample sanity checks where the same permutation train subset is used for training and evaluation.
+
 Datasets, model weights, caches, checkpoints, logs, and local environments stay outside Git.
