@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import itertools
 import math
 import random
 from argparse import Namespace
@@ -13,6 +14,11 @@ from torch.utils.data import DataLoader
 from .config import ModelConfig
 from .data import collate_token_labels, ignore_label_id, make_datasets
 from .models import make_model
+
+try:
+    from tqdm.auto import tqdm
+except ImportError:
+    tqdm = None
 
 
 def maybe_init_wandb(args: Namespace, cfg: ModelConfig, n_params: int):
@@ -68,8 +74,20 @@ def batch_metrics(logits: torch.Tensor, labels: torch.Tensor) -> Tuple[int, int,
     return token_correct, token_total, exact_correct, exact_total
 
 
+def make_progress(iterable, **kwargs):
+    if tqdm is None:
+        return iterable
+    return tqdm(iterable, dynamic_ncols=True, **kwargs)
+
+
 @torch.no_grad()
-def evaluate(model: nn.Module, loader: DataLoader, device: str, max_batches: int = 50) -> Tuple[float, float, float]:
+def evaluate(
+    model: nn.Module,
+    loader: DataLoader,
+    device: str,
+    max_batches: int = 50,
+    show_progress: bool = True,
+) -> Tuple[float, float, float]:
     model.eval()
     total_loss = 0.0
     total_items = 0
@@ -77,9 +95,11 @@ def evaluate(model: nn.Module, loader: DataLoader, device: str, max_batches: int
     token_total = 0
     exact_correct = 0
     exact_total = 0
-    for idx, batch in enumerate(loader):
-        if idx >= max_batches:
-            break
+    eval_batches = min(max_batches, len(loader))
+    iterator = enumerate(itertools.islice(loader, eval_batches))
+    if show_progress:
+        iterator = make_progress(iterator, total=eval_batches, desc="eval", leave=False)
+    for idx, batch in iterator:
         input_ids = batch["input_ids"].to(device)
         labels = batch["labels"].to(device)
         logits = model(input_ids)
@@ -92,6 +112,12 @@ def evaluate(model: nn.Module, loader: DataLoader, device: str, max_batches: int
         token_total += tt
         exact_correct += ec
         exact_total += et
+        if show_progress and tqdm is not None:
+            iterator.set_postfix(
+                loss=f"{total_loss / max(1, total_items):.4f}",
+                token_acc=f"{token_correct / max(1, token_total):.4f}",
+                exact_acc=f"{exact_correct / max(1, exact_total):.4f}",
+            )
     model.train()
     return total_loss / total_items, token_correct / max(1, token_total), exact_correct / max(1, exact_total)
 
@@ -143,7 +169,8 @@ def train(args: Namespace) -> None:
     train_iter = cycle(train_loader)
     model.train()
 
-    for step in range(1, total_steps + 1):
+    progress = make_progress(range(1, total_steps + 1), total=total_steps, desc="train", initial=0)
+    for step in progress:
         batch = next(train_iter)
         input_ids = batch["input_ids"].to(args.device)
         labels = batch["labels"].to(args.device)
@@ -153,6 +180,13 @@ def train(args: Namespace) -> None:
         loss.backward()
         nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         opt.step()
+
+        current_epoch = step / steps_per_epoch
+        if tqdm is not None:
+            progress.set_postfix(
+                loss=f"{loss.item():.4f}",
+                epoch=f"{current_epoch:.2f}/{effective_epochs:.2f}",
+            )
 
         if step == 1 or step % args.eval_every == 0:
             val_loss, token_acc, exact_acc = evaluate(model, val_loader, args.device)
@@ -165,6 +199,14 @@ def train(args: Namespace) -> None:
             }
             if wandb_run is not None:
                 wandb_run.log(metrics, step=step)
+            if tqdm is not None:
+                progress.set_postfix(
+                    loss=f"{loss.item():.4f}",
+                    val_loss=f"{val_loss:.4f}",
+                    token_acc=f"{token_acc:.4f}",
+                    exact_acc=f"{exact_acc:.4f}",
+                    epoch=f"{current_epoch:.2f}/{effective_epochs:.2f}",
+                )
             print(
                 f"step={step:05d} train_loss={loss.item():.4f} "
                 f"val_loss={val_loss:.4f} token_acc={token_acc:.4f} exact_acc={exact_acc:.4f}"
