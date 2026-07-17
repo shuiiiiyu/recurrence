@@ -4,7 +4,7 @@ Minimal experimental code for a standard causal Transformer baseline plus two de
 
 - `baseline`: Standard causal Transformer with no depth recurrence.
 - `ratio1`: Depth recurrence with input-token / recurrence-step ratio = 1. The previous token's deep state is injected into the current token's shallow layer.
-- `ratiolt1`: Depth recurrence with ratio < 1. Each external token is held fixed while the middle/deep stack is looped multiple times.
+- `ratiolt1`: Depth recurrence with ratio < 1. Each external token is held fixed while the middle/deep stack is looped multiple times. Then the previous token's deep state is injected into the current token's shallow layer.
 
 ## Layout
 
