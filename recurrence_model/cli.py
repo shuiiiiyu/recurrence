@@ -8,7 +8,7 @@ from .training import train
 
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Train recurrence models on token-label tasks")
-    p.add_argument("--model", choices=["baseline", "ratio1", "ratiolt1"], default="ratio1")
+    p.add_argument("--model", choices=["baseline", "ratio1", "ratiolt1", "ratiogt1"], default="ratio1")
     p.add_argument("--dataset", choices=["synthetic", "sudoku", "permutation"], default="synthetic")
 
     p.add_argument("--num_layers", type=int, default=num_layers)
@@ -22,6 +22,10 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--ratiolt1_loop_start_layer", type=int, default=ratiolt1_loop_start_layer)
     p.add_argument("--ratiolt1_loop_end_layer", type=int, default=ratiolt1_loop_end_layer)
     p.add_argument("--ratiolt1_num_loops", type=int, default=ratiolt1_num_loops)
+    p.add_argument("--ratiogt1_entry_layers", type=int, default=ratiogt1_entry_layers)
+    p.add_argument("--ratiogt1_loop_start_layer", type=int, default=ratiogt1_loop_start_layer)
+    p.add_argument("--ratiogt1_loop_end_layer", type=int, default=ratiogt1_loop_end_layer)
+    p.add_argument("--ratiogt1_num_loops", type=int, default=ratiogt1_num_loops)
     p.add_argument("--no_internal_cache", action="store_true")
 
     p.add_argument("--num_states", type=int, default=num_states)

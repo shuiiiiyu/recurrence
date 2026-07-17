@@ -166,6 +166,10 @@ def build_config(args: Namespace, vocab_size: int, max_seq_len: int) -> ModelCon
         ratiolt1_loop_end_layer=args.ratiolt1_loop_end_layer,
         ratiolt1_num_loops=args.ratiolt1_num_loops,
         append_internal_steps_to_cache=not args.no_internal_cache,
+        ratiogt1_entry_layers=args.ratiogt1_entry_layers,
+        ratiogt1_loop_start_layer=args.ratiogt1_loop_start_layer,
+        ratiogt1_loop_end_layer=args.ratiogt1_loop_end_layer,
+        ratiogt1_num_loops=args.ratiogt1_num_loops,
     )
 
 

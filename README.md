@@ -1,6 +1,6 @@
 # State Recurrence
 
-Minimal experimental code for a standard causal Transformer baseline plus two depth-recurrence cells in the recurrent-transformer taxonomy.
+Minimal experimental code for a standard causal Transformer baseline plus depth-recurrence cells in the recurrent-transformer taxonomy.
 
 ## Current Status
 
@@ -9,6 +9,7 @@ This repository currently implements only:
 - `baseline`: Standard causal Transformer with no depth recurrence.
 - `ratio1`: Depth recurrence with input-token / recurrence-step ratio = 1. The previous token's deep state is injected into the current token's shallow layer.
 - `ratiolt1`: Depth recurrence with ratio < 1. Each external token is held fixed while the middle/deep stack is looped multiple times. Then the previous token's deep state is injected into the current token's shallow layer.
+- `ratiogt1`: Depth recurrence with ratio > 1. The full sequence is processed in parallel with causal attention, while a middle layer range is looped multiple times in depth. There is no cross-token deep-to-shallow feedback.
 
 Other recurrent-transformer taxonomy cells, additional datasets, and larger experiment tooling are still under development.
 
@@ -20,6 +21,7 @@ scripts/smoke_test.sh             # quick CPU sanity check for all models
 scripts/train_baseline.sh         # standard Transformer baseline entrypoint
 scripts/train_ratio1.sh           # ratio = 1 entrypoint
 scripts/train_ratiolt1.sh         # ratio < 1 entrypoint
+scripts/train_ratiogt1.sh         # ratio > 1 entrypoint
 recurrence_model/config.py        # main parameters and dataclass config
 recurrence_model/data.py          # dataset loaders and tokenization
 recurrence_model/models.py        # baseline and depth-recurrence model variants

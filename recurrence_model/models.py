@@ -69,6 +69,57 @@ class TransformerBlock(nn.Module):
         return x, cache
 
 
+class FullSequenceCausalSelfAttention(nn.Module):
+    def __init__(self, d_model: int, num_heads: int, dropout: float):
+        super().__init__()
+        if d_model % num_heads != 0:
+            raise ValueError("d_model must be divisible by num_heads")
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.head_dim = d_model // num_heads
+        self.qkv = nn.Linear(d_model, 3 * d_model)
+        self.out = nn.Linear(d_model, d_model)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        bsz, seq_len, _ = x.shape
+        qkv = self.qkv(x)
+        q, k, v = qkv.chunk(3, dim=-1)
+
+        def split_heads(t: torch.Tensor) -> torch.Tensor:
+            return t.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+
+        q = split_heads(q)
+        k = split_heads(k)
+        v = split_heads(v)
+        att = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        causal_mask = torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool).tril()
+        att = att.masked_fill(~causal_mask.view(1, 1, seq_len, seq_len), torch.finfo(att.dtype).min)
+        att = self.dropout(F.softmax(att, dim=-1))
+        y = torch.matmul(att, v)
+        y = y.transpose(1, 2).contiguous().view(bsz, seq_len, self.d_model)
+        return self.out(y)
+
+
+class FullSequenceTransformerBlock(nn.Module):
+    def __init__(self, d_model: int, num_heads: int, ffn_mult: int, dropout: float):
+        super().__init__()
+        self.ln1 = nn.LayerNorm(d_model)
+        self.attn = FullSequenceCausalSelfAttention(d_model, num_heads, dropout)
+        self.ln2 = nn.LayerNorm(d_model)
+        self.ffn = nn.Sequential(
+            nn.Linear(d_model, ffn_mult * d_model),
+            nn.GELU(),
+            nn.Linear(ffn_mult * d_model, d_model),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = x + self.attn(self.ln1(x))
+        x = x + self.ffn(self.ln2(x))
+        return x
+
+
 class BaseDepthRecurrentModel(nn.Module):
     def __init__(self, cfg: ModelConfig):
         super().__init__()
@@ -85,6 +136,22 @@ class BaseDepthRecurrentModel(nn.Module):
 
     def _empty_caches(self) -> List[Optional[Dict[str, torch.Tensor]]]:
         return [None for _ in range(self.cfg.num_layers)]
+
+
+class BaseFullSequenceModel(nn.Module):
+    def __init__(self, cfg: ModelConfig):
+        super().__init__()
+        self.cfg = cfg
+        self.token_emb = nn.Embedding(cfg.vocab_size, cfg.d_model)
+        self.pos_emb = nn.Embedding(cfg.max_seq_len, cfg.d_model)
+        self.blocks = nn.ModuleList([FullSequenceTransformerBlock(cfg.d_model, cfg.num_heads, cfg.ffn_mult, cfg.dropout) for _ in range(cfg.num_layers)])
+        self.final_ln = nn.LayerNorm(cfg.d_model)
+        self.token_head = nn.Linear(cfg.d_model, cfg.vocab_size)
+
+    def _embed_sequence(self, input_ids: torch.Tensor) -> torch.Tensor:
+        _, seq_len = input_ids.shape
+        pos_ids = torch.arange(seq_len, device=input_ids.device).unsqueeze(0).expand_as(input_ids)
+        return self.token_emb(input_ids) + self.pos_emb(pos_ids)
 
 
 class CausalTransformerBaseline(BaseDepthRecurrentModel):
@@ -184,6 +251,42 @@ class DepthLoopRatioLt1Model(BaseDepthRecurrentModel):
         return self.token_head(self.final_ln(hidden))
 
 
+class DepthLoopRatioGt1Model(BaseFullSequenceModel):
+    """Depth recurrence, ratio > 1.
+
+    The whole token sequence is processed in parallel with causal attention.
+    A middle layer range is looped multiple times in depth, without cross-token
+    deep-to-shallow feedback.
+    """
+
+    def __init__(self, cfg: ModelConfig):
+        super().__init__(cfg)
+        self.entry_end = cfg.ratiogt1_entry_layers
+        self.loop_start = cfg.ratiogt1_loop_start_layer - 1
+        self.loop_end = cfg.ratiogt1_loop_end_layer - 1
+        self.num_loops = cfg.ratiogt1_num_loops
+        if self.entry_end != self.loop_start:
+            raise ValueError("entry layers should end exactly before loop_start")
+        if not (0 <= self.loop_start <= self.loop_end < cfg.num_layers):
+            raise ValueError("Invalid loop layer range")
+        if self.num_loops < 2:
+            raise ValueError("ratio > 1 depth loop requires at least two loops")
+
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        x = self._embed_sequence(input_ids)
+        for layer_idx in range(self.entry_end):
+            x = self.blocks[layer_idx](x)
+
+        for _ in range(self.num_loops):
+            for layer_idx in range(self.loop_start, self.loop_end + 1):
+                x = self.blocks[layer_idx](x)
+
+        for layer_idx in range(self.loop_end + 1, self.cfg.num_layers):
+            x = self.blocks[layer_idx](x)
+
+        return self.token_head(self.final_ln(x))
+
+
 def make_model(kind: str, cfg: ModelConfig) -> nn.Module:
     if kind == "baseline":
         return CausalTransformerBaseline(cfg)
@@ -191,4 +294,6 @@ def make_model(kind: str, cfg: ModelConfig) -> nn.Module:
         return DepthFeedbackRatio1Model(cfg)
     if kind == "ratiolt1":
         return DepthLoopRatioLt1Model(cfg)
+    if kind == "ratiogt1":
+        return DepthLoopRatioGt1Model(cfg)
     raise ValueError(f"Unknown model kind: {kind}")

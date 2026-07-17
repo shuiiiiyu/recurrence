@@ -20,6 +20,11 @@ ratiolt1_num_loops = 2
 ratiolt1_feedback_gate_init = -4.0
 append_internal_steps_to_cache = True
 
+ratiogt1_entry_layers = 7
+ratiogt1_loop_start_layer = 8
+ratiogt1_loop_end_layer = 23
+ratiogt1_num_loops = 2
+
 num_states = 16
 seq_len = 64
 train_samples = 20000
@@ -62,3 +67,7 @@ class ModelConfig:
     ratiolt1_num_loops: int = ratiolt1_num_loops
     ratiolt1_feedback_gate_init: float = ratiolt1_feedback_gate_init
     append_internal_steps_to_cache: bool = append_internal_steps_to_cache
+    ratiogt1_entry_layers: int = ratiogt1_entry_layers
+    ratiogt1_loop_start_layer: int = ratiogt1_loop_start_layer
+    ratiogt1_loop_end_layer: int = ratiogt1_loop_end_layer
+    ratiogt1_num_loops: int = ratiogt1_num_loops
