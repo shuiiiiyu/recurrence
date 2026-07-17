@@ -1,0 +1,36 @@
+__pycache__/
+*.py[cod]
+.env
+.env.*
+env_vars.sh
+
+# generated artifacts
+checkpoints/
+outputs/
+runs/
+logs/
+wandb/*
+!wandb/.gitkeep
+data/processed/
+
+# raw datasets too large for GitHub
+data/raw/permutation/
+data/raw/sudoku-extreme/
+
+# large ML files
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.arrow
+*.parquet
+*.csv
+
+# local environments
+.venv/
+env/
+envs/
+miniconda3/
+micromamba/
+pkgs/
+cuda-*/

@@ -1,0 +1,9 @@
+[project]
+name = "state-reccurence"
+version = "0.1.0"
+description = "Depth-recurrence prototypes for state-tracking experiments"
+requires-python = ">=3.10"
+dependencies = ["torch"]
+
+[tool.ruff]
+line-length = 120
