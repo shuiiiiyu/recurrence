@@ -42,3 +42,67 @@ pad = 0
 blank = 1
 digit d = d + 1
 ```
+
+### Permutation
+
+Permutation examples use the raw JSON files under `/data/shencanyu/data/raw/permutation`:
+
+```text
+input:  story permutation tokens
+label:  cumulative permutation state after each input token
+```
+
+For example, S3 with 100 story tokens has `seq_len = 100`. Each label is one permutation-state class such as `213`, aligned to the input token that produced that state. This is the aligned chain-of-thought (ACoT) format. The debug script samples a tiny subset; the full script uses the complete selected subset.
+
+Permutation metrics include:
+
+```text
+val/token_acc  # per-step state accuracy
+val/final_acc  # final composed permutation accuracy
+val/exact_acc  # all intermediate states correct for the whole sequence
+```
+
+## Data
+
+Included in this repository:
+
+- `data/raw/grade_school_math` - 14 MB
+- `data/raw/babi` - 124 MB
+
+Kept outside Git because they are too large for a normal GitHub repository:
+
+- `/data/shencanyu/data/raw/permutation` - 2.0 GB, many small JSON files
+- `/data/shencanyu/data/raw/sudoku-extreme` - 822 MB, includes Arrow shards over 100 MB
+
+
+## Epochs And Steps
+
+Training normally uses `--epochs`. The code converts epochs to optimizer steps as:
+
+```text
+steps_per_epoch = ceil(num_train_samples / batch_size)
+total_steps = ceil(epochs * steps_per_epoch)
+```
+
+You can still pass `--max_steps` to manually override the computed total steps.
+
+## Smoke Test
+
+```bash
+scripts/smoke_test.sh
+```
+## Main Entrypoints
+```bash
+scripts/train_baseline.sh
+scripts/train_ratio1.sh
+scripts/train_ratiolt1.sh
+scripts/train_permutation_full.sh
+scripts/train_permutation_debug.sh
+scripts/train_sudoku_debug.sh
+```
+Override parameters from the command line, for example:
+
+```bash
+scripts/train_ratio1.sh --num_layers 24 --d_model 384 --num_heads 6 --epochs 1
+```
+Datasets, model weights, caches, checkpoints, logs, and local environments stay outside Git.

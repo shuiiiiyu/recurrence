@@ -61,7 +61,7 @@ def token_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
 
 
 @torch.no_grad()
-def batch_metrics(logits: torch.Tensor, labels: torch.Tensor) -> Tuple[int, int, int, int]:
+def batch_metrics(logits: torch.Tensor, labels: torch.Tensor) -> Tuple[int, int, int, int, int, int]:
     preds = logits.argmax(dim=-1)
     mask = labels.ne(ignore_label_id)
     token_correct = preds.eq(labels).logical_and(mask).sum().item()
@@ -71,7 +71,14 @@ def batch_metrics(logits: torch.Tensor, labels: torch.Tensor) -> Tuple[int, int,
     exact = preds.eq(labels).logical_or(~mask).all(dim=1).logical_and(has_label)
     exact_correct = exact.sum().item()
     exact_total = has_label.sum().item()
-    return token_correct, token_total, exact_correct, exact_total
+    final_correct = 0
+    final_total = 0
+    for row_idx in has_label.nonzero(as_tuple=False).flatten():
+        label_positions = mask[row_idx].nonzero(as_tuple=False).flatten()
+        final_pos = label_positions[-1]
+        final_correct += int(preds[row_idx, final_pos].item() == labels[row_idx, final_pos].item())
+        final_total += 1
+    return token_correct, token_total, exact_correct, exact_total, final_correct, final_total
 
 
 def make_progress(iterable, **kwargs):
@@ -87,7 +94,7 @@ def evaluate(
     device: str,
     max_batches: int = 50,
     show_progress: bool = True,
-) -> Tuple[float, float, float]:
+) -> Tuple[float, float, float, float]:
     model.eval()
     total_loss = 0.0
     total_items = 0
@@ -95,6 +102,8 @@ def evaluate(
     token_total = 0
     exact_correct = 0
     exact_total = 0
+    final_correct = 0
+    final_total = 0
     eval_batches = min(max_batches, len(loader))
     iterator = enumerate(itertools.islice(loader, eval_batches))
     if show_progress:
@@ -107,19 +116,27 @@ def evaluate(
         bsz = input_ids.size(0)
         total_loss += loss.item() * bsz
         total_items += bsz
-        tc, tt, ec, et = batch_metrics(logits, labels)
+        tc, tt, ec, et, fc, ft = batch_metrics(logits, labels)
         token_correct += tc
         token_total += tt
         exact_correct += ec
         exact_total += et
+        final_correct += fc
+        final_total += ft
         if show_progress and tqdm is not None:
             iterator.set_postfix(
                 loss=f"{total_loss / max(1, total_items):.4f}",
                 token_acc=f"{token_correct / max(1, token_total):.4f}",
                 exact_acc=f"{exact_correct / max(1, exact_total):.4f}",
+                final_acc=f"{final_correct / max(1, final_total):.4f}",
             )
     model.train()
-    return total_loss / total_items, token_correct / max(1, token_total), exact_correct / max(1, exact_total)
+    return (
+        total_loss / total_items,
+        token_correct / max(1, token_total),
+        exact_correct / max(1, exact_total),
+        final_correct / max(1, final_total),
+    )
 
 
 def build_config(args: Namespace, vocab_size: int, max_seq_len: int) -> ModelConfig:
@@ -189,12 +206,13 @@ def train(args: Namespace) -> None:
             )
 
         if step == 1 or step % args.eval_every == 0:
-            val_loss, token_acc, exact_acc = evaluate(model, val_loader, args.device)
+            val_loss, token_acc, exact_acc, final_acc = evaluate(model, val_loader, args.device)
             metrics = {
                 "train/loss": loss.item(),
                 "val/loss": val_loss,
                 "val/token_acc": token_acc,
                 "val/exact_acc": exact_acc,
+                "val/final_acc": final_acc,
                 "step": step,
             }
             if wandb_run is not None:
@@ -205,11 +223,13 @@ def train(args: Namespace) -> None:
                     val_loss=f"{val_loss:.4f}",
                     token_acc=f"{token_acc:.4f}",
                     exact_acc=f"{exact_acc:.4f}",
+                    final_acc=f"{final_acc:.4f}",
                     epoch=f"{current_epoch:.2f}/{effective_epochs:.2f}",
                 )
             print(
                 f"step={step:05d} train_loss={loss.item():.4f} "
-                f"val_loss={val_loss:.4f} token_acc={token_acc:.4f} exact_acc={exact_acc:.4f}"
+                f"val_loss={val_loss:.4f} token_acc={token_acc:.4f} "
+                f"exact_acc={exact_acc:.4f} final_acc={final_acc:.4f}"
             )
 
     if wandb_run is not None:

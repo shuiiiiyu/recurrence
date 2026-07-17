@@ -110,10 +110,10 @@ class SudokuExtremeDataset(TokenLabelDataset):
 
 
 class PermutationDataset(TokenLabelDataset):
-    """Permutation composition as answer-slot token classification.
+    """Permutation composition as aligned chain-of-thought state tracking.
 
-    Input: story permutation tokens plus OUT slots.
-    Labels: ignore story positions, supervise final permutation values at OUT slots.
+    Input: story permutation tokens.
+    Labels: cumulative permutation state after each input token.
     """
 
     def __init__(self, root: str, subset: str, split: str, max_samples: Optional[int] = None, seed: int = 0):
@@ -129,9 +129,8 @@ class PermutationDataset(TokenLabelDataset):
         self.n = self._infer_n(subset, files)
         self.perm_tokens = self._all_perm_strings(self.n)
         self.token_to_id = {tok: i + 1 for i, tok in enumerate(self.perm_tokens)}
-        self.out_offset = 1 + len(self.perm_tokens)
-        self.vocab_size = self.out_offset + self.n
-        self.max_seq_len = self._infer_max_seq_len(files, self.n)
+        self.vocab_size = 1 + len(self.perm_tokens)
+        self.max_seq_len = self._infer_max_seq_len(files)
 
     @staticmethod
     def _infer_n(subset: str, files: List[Path]) -> int:
@@ -148,9 +147,13 @@ class PermutationDataset(TokenLabelDataset):
         return ["".join(map(str, p)) for p in itertools.permutations(range(1, n + 1))]
 
     @staticmethod
-    def _infer_max_seq_len(files: List[Path], n: int) -> int:
+    def _infer_max_seq_len(files: List[Path]) -> int:
         sample = json.loads(files[0].read_text())
-        return len(sample["story"].split()) + n
+        return len(sample["story"].split())
+
+    @staticmethod
+    def _state_to_token(state: List[int]) -> str:
+        return "".join(map(str, state))
 
     def __len__(self) -> int:
         return len(self.files)
@@ -159,10 +162,15 @@ class PermutationDataset(TokenLabelDataset):
         obj = json.loads(self.files[idx].read_text())
         story_tokens = obj["story"].split()
         input_ids = [self.token_to_id[tok] for tok in story_tokens]
-        input_ids.extend(self.out_offset + i for i in range(self.n))
-
-        labels = [ignore_label_id] * len(story_tokens)
-        labels.extend(int(v) for v in obj["state_seq"][-1])
+        state_seq = obj["state_seq"]
+        if len(state_seq) == len(story_tokens) + 1:
+            state_seq = state_seq[1:]
+        if len(state_seq) != len(story_tokens):
+            raise ValueError(
+                f"Expected one state label per story token in {self.files[idx]}, "
+                f"got {len(state_seq)} states for {len(story_tokens)} tokens"
+            )
+        labels = [self.token_to_id[self._state_to_token(state)] for state in state_seq]
 
         return {
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
