@@ -149,28 +149,34 @@ class PermutationDataset(TokenLabelDataset):
     @staticmethod
     def _infer_max_seq_len(files: List[Path]) -> int:
         sample = json.loads(files[0].read_text())
-        return len(sample["story"].split())
+        story = sample["story"]
+        return len(story.split()) if isinstance(story, str) else len(story)
 
     @staticmethod
     def _state_to_token(state: List[int]) -> str:
         return "".join(map(str, state))
+
+    def _encode_story(self, story) -> List[int]:
+        if isinstance(story, str):
+            return [self.token_to_id[tok] for tok in story.split()]
+        return [int(tok) for tok in story]
+
+    def _encode_state_seq(self, state_seq, story_len: int) -> List[int]:
+        if len(state_seq) == story_len + 1:
+            state_seq = state_seq[1:]
+        if len(state_seq) != story_len:
+            raise ValueError(f"Expected one state label per story token, got {len(state_seq)} states for {story_len} tokens")
+        if state_seq and isinstance(state_seq[0], list):
+            return [self.token_to_id[self._state_to_token(state)] for state in state_seq]
+        return [int(state) for state in state_seq]
 
     def __len__(self) -> int:
         return len(self.files)
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         obj = json.loads(self.files[idx].read_text())
-        story_tokens = obj["story"].split()
-        input_ids = [self.token_to_id[tok] for tok in story_tokens]
-        state_seq = obj["state_seq"]
-        if len(state_seq) == len(story_tokens) + 1:
-            state_seq = state_seq[1:]
-        if len(state_seq) != len(story_tokens):
-            raise ValueError(
-                f"Expected one state label per story token in {self.files[idx]}, "
-                f"got {len(state_seq)} states for {len(story_tokens)} tokens"
-            )
-        labels = [self.token_to_id[self._state_to_token(state)] for state in state_seq]
+        input_ids = self._encode_story(obj["story"])
+        labels = self._encode_state_seq(obj["state_seq"], len(input_ids))
 
         return {
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
