@@ -26,22 +26,6 @@ recurrence_model/models.py        # baseline and depth-recurrence model variants
 recurrence_model/training.py      # training and evaluation loop
 scripts/train.py                  # thin CLI wrapper
 ```
-
-## Task Format
-
-The training code now uses token-level labels:
-
-```text
-input_ids: [seq_len]
-labels:    [seq_len]
-```
-
-Label `0` means ignore this position in the loss. The model returns logits for every input position:
-
-```text
-logits: [batch, seq_len, vocab_size]
-```
-
 ### Sudoku
 
 Sudoku follows the TinyRecursiveModels-style format:
@@ -58,59 +42,3 @@ pad = 0
 blank = 1
 digit d = d + 1
 ```
-
-### Permutation
-
-Permutation examples use the raw JSON files under `/data/shencanyu/data/raw/permutation`:
-
-```text
-input:  story permutation tokens + OUT slots
-label:  ignore story positions, final permutation values on OUT slots
-```
-
-For example, S3 has 100 story tokens and 3 OUT slots, so `seq_len = 103`. The debug script samples a tiny subset; the full script uses the complete selected subset.
-
-## Data
-
-Included in this repository:
-
-- `data/raw/grade_school_math` - 14 MB
-- `data/raw/babi` - 124 MB
-
-Kept outside Git because they are too large for a normal GitHub repository:
-
-- `/data/shencanyu/data/raw/permutation` - 2.0 GB, many small JSON files
-- `/data/shencanyu/data/raw/sudoku-extreme` - 822 MB, includes Arrow shards over 100 MB
-
-
-## Epochs And Steps
-
-Training normally uses `--epochs`. The code converts epochs to optimizer steps as:
-
-```text
-steps_per_epoch = ceil(num_train_samples / batch_size)
-total_steps = ceil(epochs * steps_per_epoch)
-```
-
-You can still pass `--max_steps` to manually override the computed total steps.
-
-## Smoke Test
-
-```bash
-scripts/smoke_test.sh
-```
-## Main Entrypoints
-```bash
-scripts/train_baseline.sh
-scripts/train_ratio1.sh
-scripts/train_ratiolt1.sh
-scripts/train_permutation_full.sh
-scripts/train_permutation_debug.sh
-scripts/train_sudoku_debug.sh
-```
-Override parameters from the command line, for example:
-
-```bash
-scripts/train_ratio1.sh --num_layers 24 --d_model 384 --num_heads 6 --epochs 1
-```
-Datasets, model weights, caches, checkpoints, logs, and local environments stay outside Git.
