@@ -29,7 +29,6 @@ def main() -> None:
         num_heads=4,
         batch_size=8,
         max_train_samples=64,
-        max_val_samples=64,
         epochs=100,
         eval_every=20,
         device="cuda",

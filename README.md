@@ -57,10 +57,12 @@ For example, S3 with 100 story tokens has `seq_len = 100`. Each label is one per
 Permutation metrics include:
 
 ```text
-val/token_acc  # per-step state accuracy
-val/final_acc  # final composed permutation accuracy
-val/exact_acc  # all intermediate states correct for the whole sequence
+test/token_acc  # per-step state accuracy on the test split
+test/final_acc  # final composed permutation accuracy on the test split; the main task metric
+test/exact_acc  # all intermediate states correct for the whole sequence; strict auxiliary metric
 ```
+
+Training uses the dataset's `train` split and evaluation uses the dataset's `test` split. Use `--max_train_samples` and `--max_test_samples` to keep their sizes at a comparable ratio for quick runs.
 
 ## Data
 

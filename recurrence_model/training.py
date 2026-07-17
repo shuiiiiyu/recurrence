@@ -61,6 +61,16 @@ def token_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
 
 
 @torch.no_grad()
+def model_debug_metrics(model: nn.Module) -> dict:
+    metrics = {}
+    gate_logit = getattr(model, "feedback_gate_logit", None)
+    if gate_logit is not None:
+        metrics["debug/feedback_gate"] = torch.sigmoid(gate_logit.detach()).item()
+        metrics["debug/feedback_gate_logit"] = gate_logit.detach().item()
+    return metrics
+
+
+@torch.no_grad()
 def batch_metrics(logits: torch.Tensor, labels: torch.Tensor) -> Tuple[int, int, int, int, int, int]:
     preds = logits.argmax(dim=-1)
     mask = labels.ne(ignore_label_id)
@@ -161,11 +171,11 @@ def build_config(args: Namespace, vocab_size: int, max_seq_len: int) -> ModelCon
 
 def train(args: Namespace) -> None:
     set_seed(args.seed)
-    train_ds, val_ds = make_datasets(args)
+    train_ds, test_ds = make_datasets(args)
     cfg = build_config(args, train_ds.vocab_size, train_ds.max_seq_len)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate_token_labels)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_token_labels)
+    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_token_labels)
     model = make_model(args.model, cfg).to(args.device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"dataset={args.dataset} model={args.model} params={n_params/1e6:.2f}M device={args.device}")
@@ -206,21 +216,22 @@ def train(args: Namespace) -> None:
             )
 
         if step == 1 or step % args.eval_every == 0:
-            val_loss, token_acc, exact_acc, final_acc = evaluate(model, val_loader, args.device)
+            test_loss, token_acc, exact_acc, final_acc = evaluate(model, test_loader, args.device)
             metrics = {
                 "train/loss": loss.item(),
-                "val/loss": val_loss,
-                "val/token_acc": token_acc,
-                "val/exact_acc": exact_acc,
-                "val/final_acc": final_acc,
+                "test/loss": test_loss,
+                "test/token_acc": token_acc,
+                "test/exact_acc": exact_acc,
+                "test/final_acc": final_acc,
                 "step": step,
             }
+            metrics.update(model_debug_metrics(model))
             if wandb_run is not None:
                 wandb_run.log(metrics, step=step)
             if tqdm is not None:
                 progress.set_postfix(
                     loss=f"{loss.item():.4f}",
-                    val_loss=f"{val_loss:.4f}",
+                    test_loss=f"{test_loss:.4f}",
                     token_acc=f"{token_acc:.4f}",
                     exact_acc=f"{exact_acc:.4f}",
                     final_acc=f"{final_acc:.4f}",
@@ -228,7 +239,7 @@ def train(args: Namespace) -> None:
                 )
             print(
                 f"step={step:05d} train_loss={loss.item():.4f} "
-                f"val_loss={val_loss:.4f} token_acc={token_acc:.4f} "
+                f"test_loss={test_loss:.4f} token_acc={token_acc:.4f} "
                 f"exact_acc={exact_acc:.4f} final_acc={final_acc:.4f}"
             )
 

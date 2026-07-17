@@ -33,7 +33,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--permutation_root", type=str, default=permutation_root)
     p.add_argument("--permutation_subset", type=str, default=permutation_subset)
     p.add_argument("--max_train_samples", type=int, default=max_train_samples)
-    p.add_argument("--max_val_samples", type=int, default=max_val_samples)
+    p.add_argument("--max_test_samples", "--max_val_samples", dest="max_val_samples", type=int, default=max_val_samples)
 
     p.add_argument("--batch_size", type=int, default=batch_size)
     p.add_argument("--epochs", type=float, default=epochs, help="Number of passes over the training set")
