@@ -45,7 +45,11 @@ sudoku_root = "/data/shencanyu/data/raw/sudoku-extreme"
 permutation_root = "/data/shencanyu/data/raw/permutation"
 permutation_subset = "S3_len100_100k"
 max_train_samples = None
-max_val_samples = None
+max_val_samples = 10000
+max_test_samples = None
+early_stopping = False
+early_stopping_patience = 5
+early_stopping_min_delta = 1e-4
 
 
 @dataclass

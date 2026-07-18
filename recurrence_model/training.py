@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import itertools
 import math
 import random
@@ -102,7 +103,7 @@ def evaluate(
     model: nn.Module,
     loader: DataLoader,
     device: str,
-    max_batches: int = 50,
+    max_batches: int | None = None,
     show_progress: bool = True,
 ) -> Tuple[float, float, float, float]:
     model.eval()
@@ -114,7 +115,7 @@ def evaluate(
     exact_total = 0
     final_correct = 0
     final_total = 0
-    eval_batches = min(max_batches, len(loader))
+    eval_batches = len(loader) if max_batches is None else min(max_batches, len(loader))
     iterator = enumerate(itertools.islice(loader, eval_batches))
     if show_progress:
         iterator = make_progress(iterator, total=eval_batches, desc="eval", leave=False)
@@ -175,14 +176,16 @@ def build_config(args: Namespace, vocab_size: int, max_seq_len: int) -> ModelCon
 
 def train(args: Namespace) -> None:
     set_seed(args.seed)
-    train_ds, test_ds = make_datasets(args)
+    train_ds, val_ds, test_ds = make_datasets(args)
     cfg = build_config(args, train_ds.vocab_size, train_ds.max_seq_len)
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate_token_labels)
+    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_token_labels)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_token_labels)
     model = make_model(args.model, cfg).to(args.device)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"dataset={args.dataset} model={args.model} params={n_params/1e6:.2f}M device={args.device}")
+    print(f"train_samples={len(train_ds)} val_samples={len(val_ds)} test_samples={len(test_ds)}")
     print(cfg)
     wandb_run = maybe_init_wandb(args, cfg, n_params)
 
@@ -199,9 +202,15 @@ def train(args: Namespace) -> None:
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     train_iter = cycle(train_loader)
     model.train()
+    best_val_loss = float("inf")
+    best_step = 0
+    best_state = copy.deepcopy(model.state_dict())
+    bad_evals = 0
 
     progress = make_progress(range(1, total_steps + 1), total=total_steps, desc="train", initial=0)
+    last_step = 0
     for step in progress:
+        last_step = step
         batch = next(train_iter)
         input_ids = batch["input_ids"].to(args.device)
         labels = batch["labels"].to(args.device)
@@ -220,13 +229,24 @@ def train(args: Namespace) -> None:
             )
 
         if step == 1 or step % args.eval_every == 0:
-            test_loss, token_acc, exact_acc, final_acc = evaluate(model, test_loader, args.device)
+            val_loss, token_acc, exact_acc, final_acc = evaluate(model, val_loader, args.device)
+            improved = val_loss < best_val_loss - args.early_stopping_min_delta
+            if improved:
+                best_val_loss = val_loss
+                best_step = step
+                best_state = copy.deepcopy(model.state_dict())
+                bad_evals = 0
+            else:
+                bad_evals += 1
             metrics = {
                 "train/loss": loss.item(),
-                "test/loss": test_loss,
-                "test/token_acc": token_acc,
-                "test/exact_acc": exact_acc,
-                "test/final_acc": final_acc,
+                "val/loss": val_loss,
+                "val/token_acc": token_acc,
+                "val/exact_acc": exact_acc,
+                "val/final_acc": final_acc,
+                "early_stop/best_val_loss": best_val_loss,
+                "early_stop/best_step": best_step,
+                "early_stop/bad_evals": bad_evals,
                 "step": step,
             }
             metrics.update(model_debug_metrics(model))
@@ -235,7 +255,7 @@ def train(args: Namespace) -> None:
             if tqdm is not None:
                 progress.set_postfix(
                     loss=f"{loss.item():.4f}",
-                    test_loss=f"{test_loss:.4f}",
+                    val_loss=f"{val_loss:.4f}",
                     token_acc=f"{token_acc:.4f}",
                     exact_acc=f"{exact_acc:.4f}",
                     final_acc=f"{final_acc:.4f}",
@@ -243,9 +263,33 @@ def train(args: Namespace) -> None:
                 )
             print(
                 f"step={step:05d} train_loss={loss.item():.4f} "
-                f"test_loss={test_loss:.4f} token_acc={token_acc:.4f} "
-                f"exact_acc={exact_acc:.4f} final_acc={final_acc:.4f}"
+                f"val_loss={val_loss:.4f} token_acc={token_acc:.4f} "
+                f"exact_acc={exact_acc:.4f} final_acc={final_acc:.4f} "
+                f"best_step={best_step} bad_evals={bad_evals}"
             )
+            if args.early_stopping and bad_evals >= args.early_stopping_patience:
+                print(
+                    f"early stopping at step={step}; "
+                    f"best_step={best_step} best_val_loss={best_val_loss:.4f}"
+                )
+                break
 
+    model.load_state_dict(best_state)
+    test_loss, test_token_acc, test_exact_acc, test_final_acc = evaluate(model, test_loader, args.device)
+    final_metrics = {
+        "test/loss": test_loss,
+        "test/token_acc": test_token_acc,
+        "test/exact_acc": test_exact_acc,
+        "test/final_acc": test_final_acc,
+        "test/best_step": best_step,
+    }
+    final_metrics.update(model_debug_metrics(model))
+    if wandb_run is not None:
+        wandb_run.log(final_metrics, step=last_step)
+    print(
+        f"test best_step={best_step} test_loss={test_loss:.4f} "
+        f"token_acc={test_token_acc:.4f} exact_acc={test_exact_acc:.4f} "
+        f"final_acc={test_final_acc:.4f}"
+    )
     if wandb_run is not None:
         wandb_run.finish()

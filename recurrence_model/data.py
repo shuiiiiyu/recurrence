@@ -116,11 +116,11 @@ class PermutationDataset(TokenLabelDataset):
     Labels: cumulative permutation state after each input token.
     """
 
-    def __init__(self, root: str, subset: str, split: str, max_samples: Optional[int] = None, seed: int = 0):
+    def __init__(self, root: str, subset: str, split: str, max_samples: Optional[int] = None, seed: int = 0, files_override: Optional[List[Path]] = None):
         self.data_dir = Path(root) / subset / split
         if not self.data_dir.exists():
             raise FileNotFoundError(f"Permutation split not found: {self.data_dir}")
-        files = sorted(self.data_dir.glob("*.json"))
+        files = sorted(files_override) if files_override is not None else sorted(self.data_dir.glob("*.json"))
         if max_samples is not None and max_samples < len(files):
             rng = random.Random(seed)
             files = rng.sample(files, max_samples)
@@ -201,12 +201,33 @@ def make_datasets(args):
     if args.dataset == "synthetic":
         train_ds = SyntheticStateTrackingDataset(args.train_samples, args.seq_len, args.num_states, args.seed)
         val_ds = SyntheticStateTrackingDataset(args.val_samples, args.seq_len, args.num_states, args.seed + 1)
+        test_ds = SyntheticStateTrackingDataset(args.val_samples, args.seq_len, args.num_states, args.seed + 1)
     elif args.dataset == "sudoku":
-        train_ds = SudokuExtremeDataset(args.sudoku_root, "train", args.max_train_samples)
-        val_ds = SudokuExtremeDataset(args.sudoku_root, "test", args.max_val_samples)
+        from datasets import load_from_disk
+
+        train_split = load_from_disk(args.sudoku_root)["train"]
+        desired_val = min(args.max_val_samples, len(train_split))
+        train_count = max(0, len(train_split) - desired_val) if args.max_train_samples is None else min(args.max_train_samples, max(0, len(train_split) - desired_val))
+        val_count = min(desired_val, max(0, len(train_split) - train_count))
+        train_ds = SudokuExtremeDataset(args.sudoku_root, "train", train_count)
+        val_ds = SudokuExtremeDataset(args.sudoku_root, "train", train_count + val_count)
+        val_ds.ds = val_ds.ds.select(range(train_count, train_count + val_count))
+        test_ds = SudokuExtremeDataset(args.sudoku_root, "test", args.max_test_samples)
     elif args.dataset == "permutation":
-        train_ds = PermutationDataset(args.permutation_root, args.permutation_subset, "train", args.max_train_samples, args.seed)
-        val_ds = PermutationDataset(args.permutation_root, args.permutation_subset, "test", args.max_val_samples, args.seed + 1)
+        train_dir = Path(args.permutation_root) / args.permutation_subset / "train"
+        train_files = sorted(train_dir.glob("*.json"))
+        if not train_files:
+            raise FileNotFoundError(f"Permutation train split not found or empty: {train_dir}")
+        rng = random.Random(args.seed)
+        rng.shuffle(train_files)
+        desired_val = min(args.max_val_samples, len(train_files))
+        train_count = max(0, len(train_files) - desired_val) if args.max_train_samples is None else min(args.max_train_samples, max(0, len(train_files) - desired_val))
+        val_count = min(desired_val, max(0, len(train_files) - train_count))
+        train_selected = sorted(train_files[:train_count])
+        val_selected = sorted(train_files[train_count : train_count + val_count])
+        train_ds = PermutationDataset(args.permutation_root, args.permutation_subset, "train", seed=args.seed, files_override=train_selected)
+        val_ds = PermutationDataset(args.permutation_root, args.permutation_subset, "train", seed=args.seed + 1, files_override=val_selected)
+        test_ds = PermutationDataset(args.permutation_root, args.permutation_subset, "test", args.max_test_samples, args.seed + 2)
     else:
         raise ValueError(f"Unknown dataset: {args.dataset}")
-    return train_ds, val_ds
+    return train_ds, val_ds, test_ds
