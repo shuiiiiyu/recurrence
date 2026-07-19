@@ -44,12 +44,16 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 sudoku_root = "/data/shencanyu/data/raw/sudoku-extreme"
 permutation_root = "/data/shencanyu/data/raw/permutation"
 permutation_subset = "S5_len50_100k"
+babi_root = "/data/shencanyu/data/raw/babi/tasks_1-20_v1-2"
+babi_version = "en-10k"
+babi_task = "qa2"
 max_train_samples = None
 max_val_samples = 10000
 max_test_samples = None
 early_stopping = False
 early_stopping_patience = 5
 early_stopping_min_delta = 1e-4
+best_metric = "val_loss"
 
 
 @dataclass

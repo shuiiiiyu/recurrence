@@ -22,7 +22,7 @@ class IncrementalSelfAttention(nn.Module):
         self.out = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor, cache: Optional[Dict[str, torch.Tensor]], append_to_cache: bool = True) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    def forward(self, x: torch.Tensor, cache: Optional[Dict[str, torch.Tensor]], append_to_cache: bool = True, key_padding_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         bsz = x.size(0)
         qkv = self.qkv(x)
         q, k_new, v_new = qkv.chunk(3, dim=-1)
@@ -40,6 +40,15 @@ class IncrementalSelfAttention(nn.Module):
             k_all = torch.cat([cache["k"], k_new], dim=2)
             v_all = torch.cat([cache["v"], v_new], dim=2)
         att = torch.matmul(q, k_all.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        if key_padding_mask is not None:
+            key_padding_mask = key_padding_mask.to(device=att.device, dtype=torch.bool)
+            cache_len = k_all.size(2)
+            if key_padding_mask.size(1) < cache_len:
+                pad_value = key_padding_mask[:, -1:].expand(-1, cache_len - key_padding_mask.size(1))
+                key_padding_mask = torch.cat([key_padding_mask, pad_value], dim=1)
+            elif key_padding_mask.size(1) > cache_len:
+                key_padding_mask = key_padding_mask[:, :cache_len]
+            att = att.masked_fill(~key_padding_mask.view(bsz, 1, 1, cache_len), torch.finfo(att.dtype).min)
         att = self.dropout(F.softmax(att, dim=-1))
         y = torch.matmul(att, v_all)
         y = y.transpose(1, 2).contiguous().view(bsz, 1, self.d_model)
@@ -62,8 +71,8 @@ class TransformerBlock(nn.Module):
             nn.Dropout(dropout),
         )
 
-    def forward(self, x: torch.Tensor, cache: Optional[Dict[str, torch.Tensor]], append_to_cache: bool = True) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
-        y, cache = self.attn(self.ln1(x), cache, append_to_cache=append_to_cache)
+    def forward(self, x: torch.Tensor, cache: Optional[Dict[str, torch.Tensor]], append_to_cache: bool = True, key_padding_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        y, cache = self.attn(self.ln1(x), cache, append_to_cache=append_to_cache, key_padding_mask=key_padding_mask)
         x = x + y
         x = x + self.ffn(self.ln2(x))
         return x, cache
@@ -81,7 +90,7 @@ class FullSequenceCausalSelfAttention(nn.Module):
         self.out = nn.Linear(d_model, d_model)
         self.dropout = nn.Dropout(dropout)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         bsz, seq_len, _ = x.shape
         qkv = self.qkv(x)
         q, k, v = qkv.chunk(3, dim=-1)
@@ -94,7 +103,11 @@ class FullSequenceCausalSelfAttention(nn.Module):
         v = split_heads(v)
         att = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
         causal_mask = torch.ones(seq_len, seq_len, device=x.device, dtype=torch.bool).tril()
-        att = att.masked_fill(~causal_mask.view(1, 1, seq_len, seq_len), torch.finfo(att.dtype).min)
+        allowed_mask = causal_mask.view(1, 1, seq_len, seq_len)
+        if attention_mask is not None:
+            key_mask = attention_mask.to(device=x.device, dtype=torch.bool).view(bsz, 1, 1, seq_len)
+            allowed_mask = allowed_mask & key_mask
+        att = att.masked_fill(~allowed_mask, torch.finfo(att.dtype).min)
         att = self.dropout(F.softmax(att, dim=-1))
         y = torch.matmul(att, v)
         y = y.transpose(1, 2).contiguous().view(bsz, seq_len, self.d_model)
@@ -114,8 +127,8 @@ class FullSequenceTransformerBlock(nn.Module):
             nn.Dropout(dropout),
         )
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.attn(self.ln1(x))
+    def forward(self, x: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        x = x + self.attn(self.ln1(x), attention_mask=attention_mask)
         x = x + self.ffn(self.ln2(x))
         return x
 
@@ -157,10 +170,10 @@ class BaseFullSequenceModel(nn.Module):
 class CausalTransformerBaseline(BaseFullSequenceModel):
     """Standard decoder-only causal Transformer baseline."""
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = self._embed_sequence(input_ids)
         for block in self.blocks:
-            x = block(x)
+            x = block(x, attention_mask=attention_mask)
         return self.token_head(self.final_ln(x))
 
 
@@ -176,7 +189,7 @@ class DepthFeedbackRatio1Model(BaseDepthRecurrentModel):
         self.feedback_proj = nn.Linear(cfg.d_model, cfg.d_model)
         self.feedback_gate_logit = nn.Parameter(torch.tensor(float(cfg.ratio1_feedback_gate_init)))
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         bsz, seq_len = input_ids.shape
         caches = self._empty_caches()
         prev_deep_state = input_ids.new_zeros((bsz, 1, self.cfg.d_model), dtype=torch.float32)
@@ -186,7 +199,8 @@ class DepthFeedbackRatio1Model(BaseDepthRecurrentModel):
             for layer_idx, block in enumerate(self.blocks):
                 if layer_idx == self.target_idx:
                     x = x + torch.sigmoid(self.feedback_gate_logit) * self.feedback_proj(prev_deep_state)
-                x, caches[layer_idx] = block(x, caches[layer_idx], append_to_cache=True)
+                key_padding_mask = attention_mask[:, : pos + 1] if attention_mask is not None else None
+                x, caches[layer_idx] = block(x, caches[layer_idx], append_to_cache=True, key_padding_mask=key_padding_mask)
                 if layer_idx == self.source_idx:
                     prev_deep_state = x
             hidden_states.append(x)
@@ -216,7 +230,7 @@ class DepthLoopRatioLt1Model(BaseDepthRecurrentModel):
         self.feedback_proj = nn.Linear(cfg.d_model, cfg.d_model)
         self.feedback_gate_logit = nn.Parameter(torch.tensor(float(cfg.ratiolt1_feedback_gate_init)))
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         bsz, seq_len = input_ids.shape
         caches = self._empty_caches()
         prev_deep_state = input_ids.new_zeros((bsz, 1, self.cfg.d_model), dtype=torch.float32)
@@ -225,7 +239,8 @@ class DepthLoopRatioLt1Model(BaseDepthRecurrentModel):
         for pos in range(seq_len):
             x = self._embed_token(input_ids[:, pos], pos)
             for layer_idx in range(self.entry_end):
-                x, caches[layer_idx] = self.blocks[layer_idx](x, caches[layer_idx], append_to_cache=True)
+                key_padding_mask = attention_mask[:, : pos + 1] if attention_mask is not None else None
+                x, caches[layer_idx] = self.blocks[layer_idx](x, caches[layer_idx], append_to_cache=True, key_padding_mask=key_padding_mask)
 
             gate = torch.sigmoid(self.feedback_gate_logit)
             loop_state = x + gate * self.feedback_proj(prev_deep_state)
@@ -234,7 +249,8 @@ class DepthLoopRatioLt1Model(BaseDepthRecurrentModel):
                 x = loop_state
                 for layer_idx in range(self.loop_start, self.loop_end + 1):
                     append = self.cfg.append_internal_steps_to_cache or loop_idx == self.num_loops - 1
-                    x, caches[layer_idx] = self.blocks[layer_idx](x, caches[layer_idx], append_to_cache=append)
+                    key_padding_mask = attention_mask[:, : pos + 1] if attention_mask is not None else None
+                    x, caches[layer_idx] = self.blocks[layer_idx](x, caches[layer_idx], append_to_cache=append, key_padding_mask=key_padding_mask)
                 if loop_idx < self.num_loops - 1:
                     loop_state = loop_state + gate * self.feedback_proj(x)
 
@@ -266,17 +282,17 @@ class DepthLoopRatioGt1Model(BaseFullSequenceModel):
         if self.num_loops < 2:
             raise ValueError("ratio > 1 depth loop requires at least two loops")
 
-    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+    def forward(self, input_ids: torch.Tensor, attention_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         x = self._embed_sequence(input_ids)
         for layer_idx in range(self.entry_end):
-            x = self.blocks[layer_idx](x)
+            x = self.blocks[layer_idx](x, attention_mask=attention_mask)
 
         for _ in range(self.num_loops):
             for layer_idx in range(self.loop_start, self.loop_end + 1):
-                x = self.blocks[layer_idx](x)
+                x = self.blocks[layer_idx](x, attention_mask=attention_mask)
 
         for layer_idx in range(self.loop_end + 1, self.cfg.num_layers):
-            x = self.blocks[layer_idx](x)
+            x = self.blocks[layer_idx](x, attention_mask=attention_mask)
 
         return self.token_head(self.final_ln(x))
 

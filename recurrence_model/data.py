@@ -184,6 +184,127 @@ class PermutationDataset(TokenLabelDataset):
         }
 
 
+
+class BabiDataset(TokenLabelDataset):
+    """bAbI QA as decoder-only answer prediction.
+
+    The model reads story + question + <A>. Labels are shifted so the <A>
+    position predicts the first answer token, and answer-prefix positions
+    predict the next answer token or <EOS>.
+    """
+
+    q_token = "<Q>"
+    a_token = "<A>"
+    eos_token = "<EOS>"
+
+    def __init__(self, examples: List[Tuple[List[str], List[str]]], token_to_id: Dict[str, int], max_seq_len: Optional[int] = None):
+        self.examples = examples
+        self.token_to_id = token_to_id
+        self.vocab_size = 1 + len(token_to_id)
+        self.max_seq_len = max_seq_len if max_seq_len is not None else self._infer_max_seq_len(examples)
+
+    @classmethod
+    def from_examples(cls, examples: List[Tuple[List[str], List[str]]], token_to_id: Dict[str, int], max_seq_len: Optional[int] = None) -> "BabiDataset":
+        return cls(examples, token_to_id, max_seq_len=max_seq_len)
+
+    @classmethod
+    def parse_file(cls, path: Path) -> List[Tuple[List[str], List[str]]]:
+        if not path.exists():
+            raise FileNotFoundError(f"bAbI file not found: {path}")
+        examples: List[Tuple[List[str], List[str]]] = []
+        story: List[str] = []
+        for raw_line in path.read_text().splitlines():
+            line = raw_line.strip()
+            if not line:
+                continue
+            idx_text = line.split(" ", 1)
+            if len(idx_text) != 2:
+                continue
+            line_id = int(idx_text[0])
+            text = idx_text[1]
+            if line_id == 1:
+                story = []
+            if "\t" in text:
+                question, answer, _support = text.split("\t")
+                context = list(story) + [cls.q_token] + cls.tokenize(question) + [cls.a_token]
+                answer_tokens = cls.tokenize(answer)
+                examples.append((context, answer_tokens))
+            else:
+                story.extend(cls.tokenize(text))
+        return examples
+
+    @staticmethod
+    def tokenize(text: str) -> List[str]:
+        return re.findall(r"[A-Za-z0-9]+|[^\w\s]", text.lower())
+
+    @classmethod
+    def build_vocab(cls, example_groups) -> Dict[str, int]:
+        if example_groups and isinstance(example_groups[0], tuple):
+            groups = [example_groups]
+        else:
+            groups = example_groups
+        vocab = {cls.q_token, cls.a_token, cls.eos_token}
+        for examples in groups:
+            for context, answer in examples:
+                vocab.update(context)
+                vocab.update(answer)
+        return {tok: idx + 1 for idx, tok in enumerate(sorted(vocab))}
+
+    @classmethod
+    def _infer_max_seq_len(cls, examples: List[Tuple[List[str], List[str]]]) -> int:
+        if not examples:
+            return 0
+        return max(len(context) + len(answer) for context, answer in examples)
+
+    @staticmethod
+    def resolve_task_file(root: str, version: str, task: str, split: str) -> Path:
+        version_dir = Path(root) / version
+        if not version_dir.exists():
+            raise FileNotFoundError(f"bAbI version directory not found: {version_dir}")
+        matches = sorted(version_dir.glob(f"{task}_*_{split}.txt"))
+        if len(matches) != 1:
+            available = sorted(p.name.split("_", 1)[0] for p in version_dir.glob(f"*_{split}.txt"))
+            raise FileNotFoundError(f"Expected exactly one file for task={task} split={split} under {version_dir}, found {len(matches)}. Available task ids: {available}")
+        return matches[0]
+
+    def __len__(self) -> int:
+        return len(self.examples)
+
+    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+        context, answer = self.examples[idx]
+        target = answer + [self.eos_token]
+        input_tokens = context + answer
+        labels = [ignore_label_id] * len(input_tokens)
+        start = len(context) - 1
+        for offset, tok in enumerate(target):
+            labels[start + offset] = self.token_to_id[tok]
+        input_ids = [self.token_to_id[tok] for tok in input_tokens]
+        return {
+            "input_ids": torch.tensor(input_ids, dtype=torch.long),
+            "labels": torch.tensor(labels, dtype=torch.long),
+        }
+
+
+def split_babi_examples(examples: List[Tuple[List[str], List[str]]], max_train_samples: Optional[int], max_val_samples: Optional[int], seed: int) -> Tuple[List[Tuple[List[str], List[str]]], List[Tuple[List[str], List[str]]]]:
+    shuffled = list(examples)
+    rng = random.Random(seed)
+    rng.shuffle(shuffled)
+    n_examples = len(shuffled)
+    if max_train_samples is None:
+        desired_val = max_val_samples if max_val_samples is not None else min(1000, n_examples // 10)
+        if desired_val >= n_examples:
+            desired_val = min(1000, max(0, n_examples // 10))
+        val_count = min(desired_val, max(0, n_examples - 1))
+        train_count = n_examples - val_count
+    else:
+        train_count = min(max_train_samples, n_examples)
+        remaining = max(0, n_examples - train_count)
+        val_count = remaining if max_val_samples is None else min(max_val_samples, remaining)
+    train_examples = shuffled[:train_count]
+    val_examples = shuffled[train_count : train_count + val_count]
+    return train_examples, val_examples
+
+
 def collate_token_labels(batch: List[Dict[str, torch.Tensor]]) -> Dict[str, torch.Tensor]:
     max_len = max(item["input_ids"].numel() for item in batch)
     input_ids = torch.full((len(batch), max_len), pad_id, dtype=torch.long)
@@ -228,6 +349,19 @@ def make_datasets(args):
         train_ds = PermutationDataset(args.permutation_root, args.permutation_subset, "train", seed=args.seed, files_override=train_selected)
         val_ds = PermutationDataset(args.permutation_root, args.permutation_subset, "train", seed=args.seed + 1, files_override=val_selected)
         test_ds = PermutationDataset(args.permutation_root, args.permutation_subset, "test", args.max_test_samples, args.seed + 2)
+    elif args.dataset == "babi":
+        train_path = BabiDataset.resolve_task_file(args.babi_root, args.babi_version, args.babi_task, "train")
+        test_path = BabiDataset.resolve_task_file(args.babi_root, args.babi_version, args.babi_task, "test")
+        train_all = BabiDataset.parse_file(train_path)
+        test_examples = BabiDataset.parse_file(test_path)
+        train_examples, val_examples = split_babi_examples(train_all, args.max_train_samples, args.max_val_samples, args.seed)
+        if args.max_test_samples is not None:
+            test_examples = test_examples[: args.max_test_samples]
+        token_to_id = BabiDataset.build_vocab([train_examples, val_examples, test_examples])
+        max_seq_len = max(BabiDataset._infer_max_seq_len(examples) for examples in [train_examples, val_examples, test_examples] if examples)
+        train_ds = BabiDataset.from_examples(train_examples, token_to_id, max_seq_len=max_seq_len)
+        val_ds = BabiDataset.from_examples(val_examples, token_to_id, max_seq_len=max_seq_len)
+        test_ds = BabiDataset.from_examples(test_examples, token_to_id, max_seq_len=max_seq_len)
     else:
         raise ValueError(f"Unknown dataset: {args.dataset}")
     return train_ds, val_ds, test_ds

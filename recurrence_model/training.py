@@ -61,10 +61,25 @@ def token_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
     return F.cross_entropy(logits.reshape(-1, logits.size(-1)), labels.reshape(-1), ignore_index=ignore_label_id)
 
 
+def best_metric_score(metrics: dict, metric_name: str) -> tuple[float, bool]:
+    if metric_name not in metrics:
+        raise ValueError(f"Unknown best_metric={metric_name}; available metrics: {sorted(metrics)}")
+    score = float(metrics[metric_name])
+    higher_is_better = metric_name != "val_loss"
+    return score, higher_is_better
+
+
+def is_better_score(score: float, best_score: float, higher_is_better: bool, min_delta: float) -> bool:
+    if higher_is_better:
+        return score > best_score + min_delta
+    return score < best_score - min_delta
+
+
 @torch.no_grad()
 def model_debug_metrics(model: nn.Module) -> dict:
     metrics = {}
-    gate_logit = getattr(model, "feedback_gate_logit", None)
+    inner_model = model.module if isinstance(model, nn.DataParallel) else model
+    gate_logit = getattr(inner_model, "feedback_gate_logit", None)
     if gate_logit is not None:
         metrics["debug/feedback_gate"] = torch.sigmoid(gate_logit.detach()).item()
         metrics["debug/feedback_gate_logit"] = gate_logit.detach().item()
@@ -122,7 +137,8 @@ def evaluate(
     for idx, batch in iterator:
         input_ids = batch["input_ids"].to(device)
         labels = batch["labels"].to(device)
-        logits = model(input_ids)
+        attention_mask = batch["attention_mask"].to(device)
+        logits = model(input_ids, attention_mask=attention_mask)
         loss = token_loss(logits, labels)
         bsz = input_ids.size(0)
         total_loss += loss.item() * bsz
@@ -185,6 +201,9 @@ def train(args: Namespace) -> None:
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_token_labels)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_token_labels)
     model = make_model(args.model, cfg).to(args.device)
+    if args.device.startswith("cuda") and torch.cuda.device_count() > 1:
+        print(f"using DataParallel on {torch.cuda.device_count()} visible GPUs")
+        model = nn.DataParallel(model)
     n_params = sum(p.numel() for p in model.parameters())
     print(f"dataset={args.dataset} model={args.model} params={n_params/1e6:.2f}M device={args.device}")
     print(f"train_samples={len(train_ds)} val_samples={len(val_ds)} test_samples={len(test_ds)}")
@@ -204,7 +223,8 @@ def train(args: Namespace) -> None:
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     train_iter = cycle(train_loader)
     model.train()
-    best_val_loss = float("inf")
+    best_score = -float("inf") if args.best_metric != "val_loss" else float("inf")
+    best_metric_values = {}
     best_step = 0
     best_state = copy.deepcopy(model.state_dict())
     bad_evals = 0
@@ -216,7 +236,8 @@ def train(args: Namespace) -> None:
         batch = next(train_iter)
         input_ids = batch["input_ids"].to(args.device)
         labels = batch["labels"].to(args.device)
-        logits = model(input_ids)
+        attention_mask = batch["attention_mask"].to(args.device)
+        logits = model(input_ids, attention_mask=attention_mask)
         loss = token_loss(logits, labels)
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -232,9 +253,17 @@ def train(args: Namespace) -> None:
 
         if step == 1 or step % args.eval_every == 0:
             val_loss, token_acc, exact_acc, final_acc = evaluate(model, val_loader, args.device)
-            improved = val_loss < best_val_loss - args.early_stopping_min_delta
+            val_metrics = {
+                "val_loss": val_loss,
+                "val_token_acc": token_acc,
+                "val_exact_acc": exact_acc,
+                "val_final_acc": final_acc,
+            }
+            score, higher_is_better = best_metric_score(val_metrics, args.best_metric)
+            improved = is_better_score(score, best_score, higher_is_better, args.early_stopping_min_delta)
             if improved:
-                best_val_loss = val_loss
+                best_score = score
+                best_metric_values = dict(val_metrics)
                 best_step = step
                 best_state = copy.deepcopy(model.state_dict())
                 bad_evals = 0
@@ -246,11 +275,13 @@ def train(args: Namespace) -> None:
                 "val/token_acc": token_acc,
                 "val/exact_acc": exact_acc,
                 "val/final_acc": final_acc,
-                "early_stop/best_val_loss": best_val_loss,
-                "early_stop/best_step": best_step,
-                "early_stop/bad_evals": bad_evals,
+                "best/metric_score": best_score,
+                "best/step": best_step,
+                "best/bad_evals": bad_evals,
                 "step": step,
             }
+            for name, value in best_metric_values.items():
+                metrics[f"best/{name}"] = value
             metrics.update(model_debug_metrics(model))
             if wandb_run is not None:
                 wandb_run.log(metrics, step=step)
@@ -267,12 +298,12 @@ def train(args: Namespace) -> None:
                 f"step={step:05d} train_loss={loss.item():.4f} "
                 f"val_loss={val_loss:.4f} token_acc={token_acc:.4f} "
                 f"exact_acc={exact_acc:.4f} final_acc={final_acc:.4f} "
-                f"best_step={best_step} bad_evals={bad_evals}"
+                f"best_metric={args.best_metric} best_score={best_score:.4f} best_step={best_step} bad_evals={bad_evals}"
             )
             if args.early_stopping and bad_evals >= args.early_stopping_patience:
                 print(
                     f"early stopping at step={step}; "
-                    f"best_step={best_step} best_val_loss={best_val_loss:.4f}"
+                    f"best_step={best_step} best_metric={args.best_metric} best_score={best_score:.4f}"
                 )
                 break
 

@@ -9,7 +9,7 @@ from .training import train
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Train recurrence models on token-label tasks")
     p.add_argument("--model", choices=["baseline", "ratio1", "ratiolt1", "ratiogt1"], default="ratio1")
-    p.add_argument("--dataset", choices=["synthetic", "sudoku", "permutation"], default="synthetic")
+    p.add_argument("--dataset", choices=["synthetic", "sudoku", "permutation", "babi"], default="synthetic")
 
     p.add_argument("--num_layers", type=int, default=num_layers)
     p.add_argument("--d_model", type=int, default=d_model)
@@ -38,6 +38,9 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--sudoku_root", type=str, default=sudoku_root)
     p.add_argument("--permutation_root", type=str, default=permutation_root)
     p.add_argument("--permutation_subset", type=str, default=permutation_subset)
+    p.add_argument("--babi_root", type=str, default=babi_root)
+    p.add_argument("--babi_version", type=str, default=babi_version)
+    p.add_argument("--babi_task", type=str, default=babi_task, help="Task id such as qa1, qa2, ..., qa20")
     p.add_argument("--max_train_samples", type=int, default=max_train_samples)
     p.add_argument("--max_val_samples", type=int, default=max_val_samples, help="Validation samples held out from the training split")
     p.add_argument("--max_test_samples", type=int, default=max_test_samples, help="Final test samples from the test split")
@@ -52,6 +55,7 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--early_stopping", action="store_true", default=early_stopping)
     p.add_argument("--early_stopping_patience", type=int, default=early_stopping_patience)
     p.add_argument("--early_stopping_min_delta", type=float, default=early_stopping_min_delta)
+    p.add_argument("--best_metric", choices=["val_loss", "val_token_acc", "val_exact_acc", "val_final_acc"], default=best_metric, help="Validation metric used to select the checkpoint for final test")
     p.add_argument("--seed", type=int, default=seed)
     p.add_argument("--device", type=str, default=device)
     p.add_argument("--wandb", action="store_true", help="Log metrics to Weights & Biases")
