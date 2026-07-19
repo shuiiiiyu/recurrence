@@ -34,3 +34,7 @@ miniconda3/
 micromamba/
 pkgs/
 cuda-*/
+
+# tracked experiment summaries
+!results/
+!results/*.csv
