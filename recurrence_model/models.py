@@ -154,20 +154,14 @@ class BaseFullSequenceModel(nn.Module):
         return self.token_emb(input_ids) + self.pos_emb(pos_ids)
 
 
-class CausalTransformerBaseline(BaseDepthRecurrentModel):
-    """Standard causal Transformer baseline with no depth recurrence."""
+class CausalTransformerBaseline(BaseFullSequenceModel):
+    """Standard decoder-only causal Transformer baseline."""
 
     def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
-        _, seq_len = input_ids.shape
-        caches = self._empty_caches()
-        hidden_states = []
-        for pos in range(seq_len):
-            x = self._embed_token(input_ids[:, pos], pos)
-            for layer_idx, block in enumerate(self.blocks):
-                x, caches[layer_idx] = block(x, caches[layer_idx], append_to_cache=True)
-            hidden_states.append(x)
-        hidden = torch.cat(hidden_states, dim=1)
-        return self.token_head(self.final_ln(hidden))
+        x = self._embed_sequence(input_ids)
+        for block in self.blocks:
+            x = block(x)
+        return self.token_head(self.final_ln(x))
 
 
 class DepthFeedbackRatio1Model(BaseDepthRecurrentModel):

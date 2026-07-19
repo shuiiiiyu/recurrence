@@ -3,26 +3,26 @@ from __future__ import annotations
 from dataclasses import dataclass
 import torch
 
-num_layers = 24
-d_model = 384
-num_heads = 6
+num_layers = 6
+d_model = 512
+num_heads = 8
 ffn_mult = 4
 dropout = 0.0
 
-ratio1_feedback_source_layer = 24
-ratio1_feedback_target_layer = 8
+ratio1_feedback_source_layer = 6
+ratio1_feedback_target_layer = 3
 ratio1_feedback_gate_init = -4.0
 
-ratiolt1_entry_layers = 7
-ratiolt1_loop_start_layer = 8
-ratiolt1_loop_end_layer = 24
+ratiolt1_entry_layers = 2
+ratiolt1_loop_start_layer = 3
+ratiolt1_loop_end_layer = 6
 ratiolt1_num_loops = 2
 ratiolt1_feedback_gate_init = -4.0
 append_internal_steps_to_cache = True
 
-ratiogt1_entry_layers = 7
-ratiogt1_loop_start_layer = 8
-ratiogt1_loop_end_layer = 23
+ratiogt1_entry_layers = 2
+ratiogt1_loop_start_layer = 3
+ratiogt1_loop_end_layer = 6
 ratiogt1_num_loops = 2
 
 num_states = 16
@@ -43,7 +43,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 # Dataset paths and debug sampling. Set max_*_samples to None for full datasets.
 sudoku_root = "/data/shencanyu/data/raw/sudoku-extreme"
 permutation_root = "/data/shencanyu/data/raw/permutation"
-permutation_subset = "S3_len100_100k"
+permutation_subset = "S5_len50_100k"
 max_train_samples = None
 max_val_samples = 10000
 max_test_samples = None

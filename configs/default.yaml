@@ -1,7 +1,7 @@
 model:
-  num_layers: 24
-  d_model: 384
-  num_heads: 6
+  num_layers: 6
+  d_model: 512
+  num_heads: 8
   ffn_mult: 4
   dropout: 0.0
 
@@ -9,20 +9,22 @@ baseline:
   description: standard causal Transformer with no depth recurrence
 
 ratio1:
-  feedback_source_layer: 24
-  feedback_target_layer: 8
+  feedback_source_layer: 6
+  feedback_target_layer: 3
+  feedback_gate_init: -4.0
 
 ratiolt1:
-  entry_layers: 7
-  loop_start_layer: 8
-  loop_end_layer: 24
+  entry_layers: 2
+  loop_start_layer: 3
+  loop_end_layer: 6
   num_loops: 2
+  feedback_gate_init: -4.0
 
 data:
   dataset: synthetic
   sudoku_root: /data/shencanyu/data/raw/sudoku-extreme
   permutation_root: /data/shencanyu/data/raw/permutation
-  permutation_subset: S3_len100_100k
+  permutation_subset: S5_len50_100k
   max_train_samples: null
   max_val_samples: null
 
