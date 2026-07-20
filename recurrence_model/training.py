@@ -189,6 +189,16 @@ def build_config(args: Namespace, vocab_size: int, max_seq_len: int) -> ModelCon
         ratiogt1_loop_start_layer=args.ratiogt1_loop_start_layer,
         ratiogt1_loop_end_layer=args.ratiogt1_loop_end_layer,
         ratiogt1_num_loops=args.ratiogt1_num_loops,
+        deltaproduct_num_householder=args.deltaproduct_num_householder,
+        deltaproduct_use_output_gate=args.deltaproduct_use_output_gate,
+        deltaproduct_use_forget_gate=args.deltaproduct_use_forget_gate,
+        deltaproduct_allow_neg_eigval=args.deltaproduct_allow_neg_eigval,
+        mamba_d_state=args.mamba_d_state,
+        mamba_d_conv=args.mamba_d_conv,
+        mamba_expand=args.mamba_expand,
+        mamba_use_fast_path=args.mamba_use_fast_path,
+        mamba_lt1_internal_steps=args.mamba_lt1_internal_steps,
+        mamba_gt1_chunk_size=args.mamba_gt1_chunk_size,
     )
 
 

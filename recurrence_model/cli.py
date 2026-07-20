@@ -8,7 +8,7 @@ from .training import train
 
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Train recurrence models on token-label tasks")
-    p.add_argument("--model", choices=["baseline", "ratio1", "ratiolt1", "ratiogt1"], default="ratio1")
+    p.add_argument("--model", choices=["baseline", "ratio1", "ratiolt1", "ratiogt1", "deltaproduct", "mamba", "mamba_lt1", "mamba_gt1"], default="ratio1")
     p.add_argument("--dataset", choices=["synthetic", "sudoku", "permutation", "babi"], default="synthetic")
 
     p.add_argument("--num_layers", type=int, default=num_layers)
@@ -28,6 +28,16 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--ratiogt1_loop_start_layer", type=int, default=ratiogt1_loop_start_layer)
     p.add_argument("--ratiogt1_loop_end_layer", type=int, default=ratiogt1_loop_end_layer)
     p.add_argument("--ratiogt1_num_loops", type=int, default=ratiogt1_num_loops)
+    p.add_argument("--deltaproduct_num_householder", type=int, default=deltaproduct_num_householder)
+    p.add_argument("--deltaproduct_use_output_gate", action=argparse.BooleanOptionalAction, default=deltaproduct_use_output_gate)
+    p.add_argument("--deltaproduct_use_forget_gate", action=argparse.BooleanOptionalAction, default=deltaproduct_use_forget_gate)
+    p.add_argument("--deltaproduct_allow_neg_eigval", action=argparse.BooleanOptionalAction, default=deltaproduct_allow_neg_eigval)
+    p.add_argument("--mamba_d_state", type=int, default=mamba_d_state)
+    p.add_argument("--mamba_d_conv", type=int, default=mamba_d_conv)
+    p.add_argument("--mamba_expand", type=int, default=mamba_expand)
+    p.add_argument("--mamba_use_fast_path", action=argparse.BooleanOptionalAction, default=mamba_use_fast_path)
+    p.add_argument("--mamba_lt1_internal_steps", type=int, default=mamba_lt1_internal_steps)
+    p.add_argument("--mamba_gt1_chunk_size", type=int, default=mamba_gt1_chunk_size)
     p.add_argument("--no_internal_cache", action="store_true")
 
     p.add_argument("--num_states", type=int, default=num_states)

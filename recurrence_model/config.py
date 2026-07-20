@@ -25,6 +25,18 @@ ratiogt1_loop_start_layer = 3
 ratiogt1_loop_end_layer = 6
 ratiogt1_num_loops = 2
 
+deltaproduct_num_householder = 4
+deltaproduct_use_output_gate = True
+deltaproduct_use_forget_gate = False
+deltaproduct_allow_neg_eigval = False
+
+mamba_d_state = 16
+mamba_d_conv = 4
+mamba_expand = 2
+mamba_use_fast_path = True
+mamba_lt1_internal_steps = 2
+mamba_gt1_chunk_size = 4
+
 num_states = 16
 seq_len = 64
 train_samples = 20000
@@ -79,3 +91,13 @@ class ModelConfig:
     ratiogt1_loop_start_layer: int = ratiogt1_loop_start_layer
     ratiogt1_loop_end_layer: int = ratiogt1_loop_end_layer
     ratiogt1_num_loops: int = ratiogt1_num_loops
+    deltaproduct_num_householder: int = deltaproduct_num_householder
+    deltaproduct_use_output_gate: bool = deltaproduct_use_output_gate
+    deltaproduct_use_forget_gate: bool = deltaproduct_use_forget_gate
+    deltaproduct_allow_neg_eigval: bool = deltaproduct_allow_neg_eigval
+    mamba_d_state: int = mamba_d_state
+    mamba_d_conv: int = mamba_d_conv
+    mamba_expand: int = mamba_expand
+    mamba_use_fast_path: bool = mamba_use_fast_path
+    mamba_lt1_internal_steps: int = mamba_lt1_internal_steps
+    mamba_gt1_chunk_size: int = mamba_gt1_chunk_size

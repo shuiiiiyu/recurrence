@@ -1,0 +1,5 @@
+dataset,subset,task,model,status,source,selected_step,loss,token_acc,exact_acc,final_acc,train_loss,num_layers,d_model,num_heads
+permutation,S3_len100_100k,,mamba,completed,test,300,1.7835,0.1741,0.0000,0.1704,,1,384,12
+permutation,S3_len50_100k_int,,mamba,completed,test,12500,0.7404,0.5595,0.0000,0.3292,,4,384,12
+permutation,S5_len100_100k,,deltaproduct,completed,test,20000,4.7830,0.0209,0.0000,0.0074,,1,384,12
+permutation,S5_len100_100k,,mamba,completed,test,10700,4.6937,0.0280,0.0000,0.0073,,1,384,12
