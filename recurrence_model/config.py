@@ -25,17 +25,40 @@ ratiogt1_loop_start_layer = 3
 ratiogt1_loop_end_layer = 6
 ratiogt1_num_loops = 2
 
+depthstepgt1_chunk_size = 10
+depthstepgt1_memory_tokens = 1
+depthstepgt1_feedback_source_layer = 6
+depthstepgt1_feedback_target_layer = 3
+depthstepgt1_feedback_gate_init = -4.0
+
+depthratio1_feedback_source_layer = 6
+depthratio1_feedback_target_layer = 3
+depthratio1_feedback_gate_init = -2.0
+
+depthratiolt1_num_steps = 2
+depthratiolt1_feedback_source_layer = 6
+depthratiolt1_feedback_target_layer = 3
+depthratiolt1_feedback_gate_init = -2.0
+
 deltaproduct_num_householder = 4
 deltaproduct_use_output_gate = True
-deltaproduct_use_forget_gate = False
-deltaproduct_allow_neg_eigval = False
+deltaproduct_use_forget_gate = True
+deltaproduct_allow_neg_eigval = True
+deltaproduct_use_short_conv = True
+deltaproduct_conv_size = 4
 
 mamba_d_state = 16
 mamba_d_conv = 4
 mamba_expand = 2
 mamba_use_fast_path = True
 mamba_lt1_internal_steps = 2
-mamba_gt1_chunk_size = 4
+
+brt_block_size = 16
+brt_num_states = 64
+brt_gate_type = "lstm"
+brt_single_gate = False
+brt_skip_ffn = False
+brt_layer_indices = "-3"
 
 num_states = 16
 seq_len = 64
@@ -91,13 +114,32 @@ class ModelConfig:
     ratiogt1_loop_start_layer: int = ratiogt1_loop_start_layer
     ratiogt1_loop_end_layer: int = ratiogt1_loop_end_layer
     ratiogt1_num_loops: int = ratiogt1_num_loops
+    depthstepgt1_chunk_size: int = depthstepgt1_chunk_size
+    depthstepgt1_memory_tokens: int = depthstepgt1_memory_tokens
+    depthstepgt1_feedback_source_layer: int = depthstepgt1_feedback_source_layer
+    depthstepgt1_feedback_target_layer: int = depthstepgt1_feedback_target_layer
+    depthstepgt1_feedback_gate_init: float = depthstepgt1_feedback_gate_init
+    depthratio1_feedback_source_layer: int = depthratio1_feedback_source_layer
+    depthratio1_feedback_target_layer: int = depthratio1_feedback_target_layer
+    depthratio1_feedback_gate_init: float = depthratio1_feedback_gate_init
+    depthratiolt1_num_steps: int = depthratiolt1_num_steps
+    depthratiolt1_feedback_source_layer: int = depthratiolt1_feedback_source_layer
+    depthratiolt1_feedback_target_layer: int = depthratiolt1_feedback_target_layer
+    depthratiolt1_feedback_gate_init: float = depthratiolt1_feedback_gate_init
     deltaproduct_num_householder: int = deltaproduct_num_householder
     deltaproduct_use_output_gate: bool = deltaproduct_use_output_gate
     deltaproduct_use_forget_gate: bool = deltaproduct_use_forget_gate
     deltaproduct_allow_neg_eigval: bool = deltaproduct_allow_neg_eigval
+    deltaproduct_use_short_conv: bool = deltaproduct_use_short_conv
+    deltaproduct_conv_size: int = deltaproduct_conv_size
     mamba_d_state: int = mamba_d_state
     mamba_d_conv: int = mamba_d_conv
     mamba_expand: int = mamba_expand
     mamba_use_fast_path: bool = mamba_use_fast_path
     mamba_lt1_internal_steps: int = mamba_lt1_internal_steps
-    mamba_gt1_chunk_size: int = mamba_gt1_chunk_size
+    brt_block_size: int = brt_block_size
+    brt_num_states: int = brt_num_states
+    brt_gate_type: str = brt_gate_type
+    brt_single_gate: bool = brt_single_gate
+    brt_skip_ffn: bool = brt_skip_ffn
+    brt_layer_indices: str = brt_layer_indices

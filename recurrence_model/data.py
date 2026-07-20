@@ -196,6 +196,7 @@ class BabiDataset(TokenLabelDataset):
     q_token = "<Q>"
     a_token = "<A>"
     eos_token = "<EOS>"
+    unk_token = "<UNK>"
 
     def __init__(self, examples: List[Tuple[List[str], List[str]]], token_to_id: Dict[str, int], max_seq_len: Optional[int] = None):
         self.examples = examples
@@ -243,7 +244,7 @@ class BabiDataset(TokenLabelDataset):
             groups = [example_groups]
         else:
             groups = example_groups
-        vocab = {cls.q_token, cls.a_token, cls.eos_token}
+        vocab = {cls.q_token, cls.a_token, cls.eos_token, cls.unk_token}
         for examples in groups:
             for context, answer in examples:
                 vocab.update(context)
@@ -277,8 +278,9 @@ class BabiDataset(TokenLabelDataset):
         labels = [ignore_label_id] * len(input_tokens)
         start = len(context) - 1
         for offset, tok in enumerate(target):
-            labels[start + offset] = self.token_to_id[tok]
-        input_ids = [self.token_to_id[tok] for tok in input_tokens]
+            labels[start + offset] = self.token_to_id.get(tok, self.token_to_id[self.unk_token])
+        unk_id = self.token_to_id[self.unk_token]
+        input_ids = [self.token_to_id.get(tok, unk_id) for tok in input_tokens]
         return {
             "input_ids": torch.tensor(input_ids, dtype=torch.long),
             "labels": torch.tensor(labels, dtype=torch.long),
@@ -357,7 +359,7 @@ def make_datasets(args):
         train_examples, val_examples = split_babi_examples(train_all, args.max_train_samples, args.max_val_samples, args.seed)
         if args.max_test_samples is not None:
             test_examples = test_examples[: args.max_test_samples]
-        token_to_id = BabiDataset.build_vocab([train_examples, val_examples, test_examples])
+        token_to_id = BabiDataset.build_vocab([train_examples, val_examples])
         max_seq_len = max(BabiDataset._infer_max_seq_len(examples) for examples in [train_examples, val_examples, test_examples] if examples)
         train_ds = BabiDataset.from_examples(train_examples, token_to_id, max_seq_len=max_seq_len)
         val_ds = BabiDataset.from_examples(val_examples, token_to_id, max_seq_len=max_seq_len)
