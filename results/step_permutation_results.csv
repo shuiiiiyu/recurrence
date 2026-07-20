@@ -3,3 +3,10 @@ permutation,S3_len100_100k,,mamba,completed,test,300,1.7835,0.1741,0.0000,0.1704
 permutation,S3_len50_100k_int,,mamba,completed,test,12500,0.7404,0.5595,0.0000,0.3292,,4,384,12
 permutation,S5_len100_100k,,deltaproduct,completed,test,20000,4.7830,0.0209,0.0000,0.0074,,1,384,12
 permutation,S5_len100_100k,,mamba,completed,test,10700,4.6937,0.0280,0.0000,0.0073,,1,384,12
+permutation,S3_len100_100k,,mamba,completed,test,37000,0.8572,0.4880,0.0000,0.3398,,4,384,12
+permutation,S3_len100_100k,,mamba_lt1,completed,test,12200,1.0878,0.4064,0.0000,0.1703,,4,384,12
+permutation,S5_len100_100k,,mamba_lt1,completed,test,4000,4.7069,0.0284,0.0000,0.0100,,4,384,12
+permutation,S3_len100_100k,,brt,completed,test,2400,1.5672,0.2649,0.0000,0.1669,,6,256,4
+permutation,S5_len100_100k,,brt,completed,test,9400,4.7444,0.0282,0.0000,0.0084,,6,256,4
+permutation,S3_len100_100k,,deltaproduct,completed,test,1400,0.0001,1.0000,0.9996,0.9999,,4,512,8
+permutation,S5_len100_100k,,deltaproduct,completed,test,14200,10.0511,0.0281,0.0000,0.0078,,4,512,8
