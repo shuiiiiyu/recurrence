@@ -20,8 +20,8 @@ ratiolt1_num_loops = 2
 ratiolt1_feedback_gate_init = -4.0
 append_internal_steps_to_cache = True
 
-ratiogt1_entry_layers = 2
-ratiogt1_loop_start_layer = 3
+ratiogt1_entry_layers = 0
+ratiogt1_loop_start_layer = 1
 ratiogt1_loop_end_layer = 6
 ratiogt1_num_loops = 2
 
@@ -51,7 +51,6 @@ mamba_d_state = 16
 mamba_d_conv = 4
 mamba_expand = 2
 mamba_use_fast_path = True
-mamba_lt1_internal_steps = 2
 
 brt_block_size = 16
 brt_num_states = 64
@@ -136,7 +135,6 @@ class ModelConfig:
     mamba_d_conv: int = mamba_d_conv
     mamba_expand: int = mamba_expand
     mamba_use_fast_path: bool = mamba_use_fast_path
-    mamba_lt1_internal_steps: int = mamba_lt1_internal_steps
     brt_block_size: int = brt_block_size
     brt_num_states: int = brt_num_states
     brt_gate_type: str = brt_gate_type

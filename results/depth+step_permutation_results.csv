@@ -29,3 +29,6 @@ permutation,S5_len50_100k,,ratio1,completed,test,2200,4.6944,0.0284,0.0000,0.008
 permutation,S5_len50_100k,,ratio1,completed,test,4000,4.6928,0.0285,0.0000,0.0080,,8,512,8
 permutation,S5_len50_100k,,ratio1,completed,test,47500,0.0000,1.0000,1.0000,1.0000,,8,512,8
 permutation,S5_len50_100k,,ratiolt1,interrupted,last_val,59000,0.0009,1.0000,0.9999,1.0000,0.0008,8,512,8
+permutation,S3_len100_100k,,depthstep_gt1,completed,test,800,1.6621,0.2260,0.0000,0.1701,,6,256,4
+permutation,S5_len100_100k,,depthstep_gt1,completed,test,3800,4.7260,0.0223,0.0000,0.0115,,6,256,4
+permutation,S3_len100_100k,,depthstep_gt1,completed,test,24000,1.3220,0.3781,0.0000,0.2234,,6,256,4

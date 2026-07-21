@@ -4,9 +4,9 @@ This repository contains experimental code for recurrent transformer taxonomy ex
 
 ## Current Scope
 
-The repository currently implements depth recurrence and step recurrence models for state-tracking experiments.
+The repository currently implements depth recurrence, step recurrence, and depth+step recurrence models for state-tracking experiments.
 
-Step recurrence models directly reuse code or core implementations from existing papers. Depth recurrence ratio=1 and ratio<1 are implemented in this repository based on the architectural descriptions in the taxonomy paper. Other depth-recurrence variants are adapted from existing architecture code.
+Step recurrence models directly reuse code or core implementations from existing papers. Depth recurrence ratio=1 and ratio<1 are implemented in this repository based on the architectural descriptions in the taxonomy paper. Other depth-recurrence variants are adapted from existing architecture code. Depth+step recurrence variants are also implemented and evaluated as a separate family.
 
 ## Self-Implemented Depth Recurrence
 

@@ -5,6 +5,7 @@ import itertools
 import math
 import random
 from argparse import Namespace
+from pathlib import Path
 from typing import Iterable, Tuple
 
 import torch
@@ -75,10 +76,71 @@ def is_better_score(score: float, best_score: float, higher_is_better: bool, min
     return score < best_score - min_delta
 
 
+def unwrap_model(model: nn.Module) -> nn.Module:
+    return model.module if isinstance(model, nn.DataParallel) else model
+
+
+def model_state_dict(model: nn.Module) -> dict:
+    return copy.deepcopy(unwrap_model(model).state_dict())
+
+
+def load_model_state_dict(model: nn.Module, state_dict: dict) -> None:
+    normalized = {}
+    for key, value in state_dict.items():
+        normalized[key.removeprefix("module.")] = value
+    unwrap_model(model).load_state_dict(normalized)
+
+
+def safe_name(text: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in text).strip("_")
+
+
+def default_checkpoint_path(args: Namespace) -> Path:
+    if args.wandb_run_name:
+        name = args.wandb_run_name
+    elif args.dataset == "permutation":
+        name = f"{args.dataset}-{args.permutation_subset}-{args.model}-seed{args.seed}"
+    elif args.dataset == "babi":
+        name = f"{args.dataset}-{args.babi_version}-{args.babi_task}-{args.model}-seed{args.seed}"
+    else:
+        name = f"{args.dataset}-{args.model}-seed{args.seed}"
+    return Path(args.checkpoint_dir) / f"{safe_name(name)}.pt"
+
+
+def save_checkpoint(
+    path: Path,
+    model: nn.Module,
+    args: Namespace,
+    cfg: ModelConfig,
+    step: int,
+    best_metric: str,
+    best_score: float,
+    best_metric_values: dict,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "model_state": model_state_dict(model),
+        "args": vars(args),
+        "model_config": cfg.__dict__,
+        "step": step,
+        "best_metric": best_metric,
+        "best_score": best_score,
+        "best_metric_values": best_metric_values,
+    }
+    torch.save(payload, path)
+
+
+def load_checkpoint(model: nn.Module, checkpoint_path: str, device: str) -> dict:
+    payload = torch.load(checkpoint_path, map_location=device)
+    state_dict = payload["model_state"] if isinstance(payload, dict) and "model_state" in payload else payload
+    load_model_state_dict(model, state_dict)
+    return payload if isinstance(payload, dict) else {"model_state": state_dict}
+
+
 @torch.no_grad()
 def model_debug_metrics(model: nn.Module) -> dict:
     metrics = {}
-    inner_model = model.module if isinstance(model, nn.DataParallel) else model
+    inner_model = unwrap_model(model)
     gate_logit = getattr(inner_model, "feedback_gate_logit", None)
     if gate_logit is not None:
         metrics["debug/feedback_gate"] = torch.sigmoid(gate_logit.detach()).item()
@@ -232,6 +294,38 @@ def train(args: Namespace) -> None:
     print(f"train_samples={len(train_ds)} val_samples={len(val_ds)} test_samples={len(test_ds)}")
     print(cfg)
     wandb_run = maybe_init_wandb(args, cfg, n_params)
+    checkpoint_path = default_checkpoint_path(args)
+
+    if args.eval_checkpoint is not None:
+        payload = load_checkpoint(model, args.eval_checkpoint, args.device)
+        checkpoint_step = payload.get("step", "")
+        print(f"loaded checkpoint={args.eval_checkpoint} checkpoint_step={checkpoint_step}")
+        test_loss, test_token_acc, test_exact_acc, test_final_acc = evaluate(model, test_loader, args.device)
+        final_metrics = {
+            "test/loss": test_loss,
+            "test/token_acc": test_token_acc,
+            "test/exact_acc": test_exact_acc,
+            "test/final_acc": test_final_acc,
+            "test/best_step": checkpoint_step,
+        }
+        final_metrics.update(model_debug_metrics(model))
+        if wandb_run is not None:
+            wandb_run.log(final_metrics)
+            wandb_run.finish()
+        print(
+            f"test checkpoint_step={checkpoint_step} test_loss={test_loss:.4f} "
+            f"token_acc={test_token_acc:.4f} exact_acc={test_exact_acc:.4f} "
+            f"final_acc={test_final_acc:.4f}"
+        )
+        return
+
+    if args.init_checkpoint is not None:
+        payload = load_checkpoint(model, args.init_checkpoint, args.device)
+        checkpoint_step = payload.get("step", "")
+        print(f"initialized training from checkpoint={args.init_checkpoint} checkpoint_step={checkpoint_step}")
+
+    if not args.no_save_checkpoint:
+        print(f"best checkpoints will be saved to {checkpoint_path}")
 
     steps_per_epoch = math.ceil(len(train_ds) / args.batch_size)
     if args.max_steps is not None:
@@ -249,7 +343,7 @@ def train(args: Namespace) -> None:
     best_score = -float("inf") if args.best_metric != "val_loss" else float("inf")
     best_metric_values = {}
     best_step = 0
-    best_state = copy.deepcopy(model.state_dict())
+    best_state = model_state_dict(model)
     bad_evals = 0
 
     progress = make_progress(range(1, total_steps + 1), total=total_steps, desc="train", initial=0)
@@ -288,7 +382,18 @@ def train(args: Namespace) -> None:
                 best_score = score
                 best_metric_values = dict(val_metrics)
                 best_step = step
-                best_state = copy.deepcopy(model.state_dict())
+                best_state = model_state_dict(model)
+                if not args.no_save_checkpoint:
+                    save_checkpoint(
+                        checkpoint_path,
+                        model,
+                        args,
+                        cfg,
+                        step,
+                        args.best_metric,
+                        best_score,
+                        best_metric_values,
+                    )
                 bad_evals = 0
             else:
                 bad_evals += 1
@@ -330,7 +435,7 @@ def train(args: Namespace) -> None:
                 )
                 break
 
-    model.load_state_dict(best_state)
+    load_model_state_dict(model, best_state)
     test_loss, test_token_acc, test_exact_acc, test_final_acc = evaluate(model, test_loader, args.device)
     final_metrics = {
         "test/loss": test_loss,

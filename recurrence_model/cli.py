@@ -8,7 +8,7 @@ from .training import train
 
 def build_argparser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Train recurrence models on token-label tasks")
-    p.add_argument("--model", choices=["baseline", "ratio1", "ratiolt1", "ratiogt1", "depthstep_gt1", "depthRatio1", "depthRatiolt1", "deltaproduct", "mamba", "mamba_lt1", "brt"], default="ratio1")
+    p.add_argument("--model", choices=["baseline", "ratiogt1", "depthRatiogt1", "depthRatio1", "depthRatiolt1", "depthstep_gt1", "depthstepRatiogt1", "ratio1", "depthstepRatio1", "ratiolt1", "depthstepRatiolt1", "deltaproduct", "mamba", "brt"], default="ratio1")
     p.add_argument("--dataset", choices=["synthetic", "sudoku", "permutation", "babi"], default="synthetic")
 
     p.add_argument("--num_layers", type=int, default=num_layers)
@@ -50,7 +50,6 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--mamba_d_conv", type=int, default=mamba_d_conv)
     p.add_argument("--mamba_expand", type=int, default=mamba_expand)
     p.add_argument("--mamba_use_fast_path", action=argparse.BooleanOptionalAction, default=mamba_use_fast_path)
-    p.add_argument("--mamba_lt1_internal_steps", type=int, default=mamba_lt1_internal_steps)
     p.add_argument("--brt_block_size", type=int, default=brt_block_size)
     p.add_argument("--brt_num_states", type=int, default=brt_num_states)
     p.add_argument("--brt_gate_type", choices=["bias", "lstm"], default=brt_gate_type)
@@ -85,6 +84,10 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--early_stopping_patience", type=int, default=early_stopping_patience)
     p.add_argument("--early_stopping_min_delta", type=float, default=early_stopping_min_delta)
     p.add_argument("--best_metric", choices=["val_loss", "val_token_acc", "val_exact_acc", "val_final_acc"], default=best_metric, help="Validation metric used to select the checkpoint for final test")
+    p.add_argument("--checkpoint_dir", type=str, default="checkpoints", help="Directory for best-checkpoint files")
+    p.add_argument("--no_save_checkpoint", action="store_true", help="Do not write the best checkpoint to disk during training")
+    p.add_argument("--init_checkpoint", type=str, default=None, help="Load model weights from a checkpoint before continuing training")
+    p.add_argument("--eval_checkpoint", type=str, default=None, help="Load a checkpoint and run final test evaluation without training")
     p.add_argument("--seed", type=int, default=seed)
     p.add_argument("--device", type=str, default=device)
     p.add_argument("--wandb", action="store_true", help="Log metrics to Weights & Biases")
