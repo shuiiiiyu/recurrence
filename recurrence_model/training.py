@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import csv
 import copy
+from datetime import datetime
 import itertools
 import math
+import os
 import random
 from argparse import Namespace
 from pathlib import Path
 from typing import Iterable, Tuple
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
 from .config import ModelConfig
 from .data import collate_token_labels, ignore_label_id, make_datasets
@@ -52,10 +58,14 @@ def set_seed(seed: int) -> None:
     torch.cuda.manual_seed_all(seed)
 
 
-def cycle(loader: DataLoader) -> Iterable[dict]:
+def cycle(loader: DataLoader, sampler: DistributedSampler | None = None) -> Iterable[dict]:
+    epoch = 0
     while True:
+        if sampler is not None:
+            sampler.set_epoch(epoch)
         for batch in loader:
             yield batch
+        epoch += 1
 
 
 def token_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
@@ -76,8 +86,44 @@ def is_better_score(score: float, best_score: float, higher_is_better: bool, min
     return score < best_score - min_delta
 
 
+def setup_distributed(args: Namespace) -> tuple[bool, int, int, int, str]:
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    if world_size <= 1:
+        return False, 0, 0, 1, args.device
+    if not torch.cuda.is_available():
+        raise RuntimeError("DDP training requires CUDA")
+    local_rank = int(os.environ["LOCAL_RANK"])
+    rank = int(os.environ["RANK"])
+    torch.cuda.set_device(local_rank)
+    dist.init_process_group(backend="nccl")
+    return True, rank, local_rank, world_size, f"cuda:{local_rank}"
+
+
+def cleanup_distributed(is_ddp: bool) -> None:
+    if is_ddp and dist.is_initialized():
+        dist.destroy_process_group()
+
+
+def is_main_process(rank: int) -> bool:
+    return rank == 0
+
+
+def main_print(rank: int, *args, **kwargs) -> None:
+    if is_main_process(rank):
+        print(*args, **kwargs)
+
+
+def reduce_mean_scalar(value: float, device: str, is_ddp: bool) -> float:
+    if not is_ddp:
+        return float(value)
+    tensor = torch.tensor(float(value), device=device)
+    dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+    tensor /= dist.get_world_size()
+    return tensor.item()
+
+
 def unwrap_model(model: nn.Module) -> nn.Module:
-    return model.module if isinstance(model, nn.DataParallel) else model
+    return model.module if isinstance(model, (nn.DataParallel, DistributedDataParallel)) else model
 
 
 def model_state_dict(model: nn.Module) -> dict:
@@ -135,6 +181,60 @@ def load_checkpoint(model: nn.Module, checkpoint_path: str, device: str) -> dict
     state_dict = payload["model_state"] if isinstance(payload, dict) and "model_state" in payload else payload
     load_model_state_dict(model, state_dict)
     return payload if isinstance(payload, dict) else {"model_state": state_dict}
+
+
+def append_result_csv(
+    args: Namespace,
+    cfg: ModelConfig,
+    n_params: int,
+    status: str,
+    selected_step: int | str,
+    metrics: dict,
+    checkpoint_path: Path,
+    world_size: int,
+) -> None:
+    if args.no_save_results:
+        return
+    path = Path(args.results_csv)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    row = {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "dataset": args.dataset,
+        "subset": args.permutation_subset if args.dataset == "permutation" else args.babi_version if args.dataset == "babi" else "",
+        "task": args.babi_task if args.dataset == "babi" else "",
+        "model": args.model,
+        "status": status,
+        "source": "test",
+        "selected_step": selected_step,
+        "loss": metrics.get("test/loss", ""),
+        "token_acc": metrics.get("test/token_acc", ""),
+        "exact_acc": metrics.get("test/exact_acc", ""),
+        "final_acc": metrics.get("test/final_acc", ""),
+        "train_loss": metrics.get("train/loss", ""),
+        "best_metric": args.best_metric,
+        "best_score": metrics.get("best/metric_score", ""),
+        "num_layers": cfg.num_layers,
+        "d_model": cfg.d_model,
+        "num_heads": cfg.num_heads,
+        "ffn_mult": cfg.ffn_mult,
+        "batch_size_per_gpu": args.batch_size,
+        "world_size": world_size,
+        "global_batch_size": args.batch_size * world_size,
+        "max_steps": args.max_steps,
+        "lr": args.lr,
+        "weight_decay": args.weight_decay,
+        "seed": args.seed,
+        "params": n_params,
+        "wandb_project": args.wandb_project,
+        "wandb_run_name": args.wandb_run_name or "",
+        "checkpoint_path": str(checkpoint_path),
+    }
+    write_header = not path.exists()
+    with path.open("a", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(row))
+        if write_header:
+            writer.writeheader()
+        writer.writerow(row)
 
 
 @torch.no_grad()
@@ -273,184 +373,228 @@ def build_config(args: Namespace, vocab_size: int, max_seq_len: int) -> ModelCon
         mamba_d_conv=args.mamba_d_conv,
         mamba_expand=args.mamba_expand,
         mamba_use_fast_path=args.mamba_use_fast_path,
-        mamba_lt1_internal_steps=args.mamba_lt1_internal_steps,
+        brt_block_size=args.brt_block_size,
+        brt_num_states=args.brt_num_states,
+        brt_gate_type=args.brt_gate_type,
+        brt_single_gate=args.brt_single_gate,
+        brt_skip_ffn=args.brt_skip_ffn,
+        brt_layer_indices=args.brt_layer_indices,
     )
 
 
 def train(args: Namespace) -> None:
-    set_seed(args.seed)
-    train_ds, val_ds, test_ds = make_datasets(args)
-    cfg = build_config(args, train_ds.vocab_size, train_ds.max_seq_len)
+    is_ddp, rank, local_rank, world_size, device = setup_distributed(args)
+    args.device = device
+    try:
+        set_seed(args.seed + rank)
+        train_ds, val_ds, test_ds = make_datasets(args)
+        cfg = build_config(args, train_ds.vocab_size, train_ds.max_seq_len)
 
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, num_workers=0, collate_fn=collate_token_labels)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_token_labels)
-    test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_token_labels)
-    model = make_model(args.model, cfg).to(args.device)
-    if args.device.startswith("cuda") and torch.cuda.device_count() > 1:
-        print(f"using DataParallel on {torch.cuda.device_count()} visible GPUs")
-        model = nn.DataParallel(model)
-    n_params = sum(p.numel() for p in model.parameters())
-    print(f"dataset={args.dataset} model={args.model} params={n_params/1e6:.2f}M device={args.device}")
-    print(f"train_samples={len(train_ds)} val_samples={len(val_ds)} test_samples={len(test_ds)}")
-    print(cfg)
-    wandb_run = maybe_init_wandb(args, cfg, n_params)
-    checkpoint_path = default_checkpoint_path(args)
-
-    if args.eval_checkpoint is not None:
-        payload = load_checkpoint(model, args.eval_checkpoint, args.device)
-        checkpoint_step = payload.get("step", "")
-        print(f"loaded checkpoint={args.eval_checkpoint} checkpoint_step={checkpoint_step}")
-        test_loss, test_token_acc, test_exact_acc, test_final_acc = evaluate(model, test_loader, args.device)
-        final_metrics = {
-            "test/loss": test_loss,
-            "test/token_acc": test_token_acc,
-            "test/exact_acc": test_exact_acc,
-            "test/final_acc": test_final_acc,
-            "test/best_step": checkpoint_step,
-        }
-        final_metrics.update(model_debug_metrics(model))
-        if wandb_run is not None:
-            wandb_run.log(final_metrics)
-            wandb_run.finish()
-        print(
-            f"test checkpoint_step={checkpoint_step} test_loss={test_loss:.4f} "
-            f"token_acc={test_token_acc:.4f} exact_acc={test_exact_acc:.4f} "
-            f"final_acc={test_final_acc:.4f}"
+        train_sampler = DistributedSampler(train_ds, num_replicas=world_size, rank=rank, shuffle=True, seed=args.seed) if is_ddp else None
+        train_loader = DataLoader(
+            train_ds,
+            batch_size=args.batch_size,
+            shuffle=train_sampler is None,
+            sampler=train_sampler,
+            num_workers=0,
+            collate_fn=collate_token_labels,
         )
-        return
+        val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_token_labels)
+        test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False, num_workers=0, collate_fn=collate_token_labels)
+        model = make_model(args.model, cfg).to(args.device)
+        if is_ddp:
+            model = DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank)
+        n_params = sum(p.numel() for p in unwrap_model(model).parameters())
+        main_print(rank, f"dataset={args.dataset} model={args.model} params={n_params/1e6:.2f}M device={args.device}")
+        main_print(rank, f"ddp={is_ddp} world_size={world_size} batch_size_per_gpu={args.batch_size} global_batch_size={args.batch_size * world_size}")
+        main_print(rank, f"train_samples={len(train_ds)} val_samples={len(val_ds)} test_samples={len(test_ds)}")
+        main_print(rank, cfg)
+        wandb_run = maybe_init_wandb(args, cfg, n_params) if is_main_process(rank) else None
+        checkpoint_path = default_checkpoint_path(args)
 
-    if args.init_checkpoint is not None:
-        payload = load_checkpoint(model, args.init_checkpoint, args.device)
-        checkpoint_step = payload.get("step", "")
-        print(f"initialized training from checkpoint={args.init_checkpoint} checkpoint_step={checkpoint_step}")
+        if args.eval_checkpoint is not None:
+            payload = load_checkpoint(model, args.eval_checkpoint, args.device)
+            checkpoint_step = payload.get("step", "")
+            if is_ddp:
+                dist.barrier()
+            if is_main_process(rank):
+                print(f"loaded checkpoint={args.eval_checkpoint} checkpoint_step={checkpoint_step}")
+                test_loss, test_token_acc, test_exact_acc, test_final_acc = evaluate(unwrap_model(model), test_loader, args.device)
+                final_metrics = {
+                    "test/loss": test_loss,
+                    "test/token_acc": test_token_acc,
+                    "test/exact_acc": test_exact_acc,
+                    "test/final_acc": test_final_acc,
+                    "test/best_step": checkpoint_step,
+                }
+                final_metrics.update(model_debug_metrics(model))
+                append_result_csv(args, cfg, n_params, "eval_checkpoint", checkpoint_step, final_metrics, checkpoint_path, world_size)
+                if wandb_run is not None:
+                    wandb_run.log(final_metrics)
+                    wandb_run.finish()
+                print(
+                    f"test checkpoint_step={checkpoint_step} test_loss={test_loss:.4f} "
+                    f"token_acc={test_token_acc:.4f} exact_acc={test_exact_acc:.4f} "
+                    f"final_acc={test_final_acc:.4f}"
+                )
+            if is_ddp:
+                dist.barrier()
+            return
 
-    if not args.no_save_checkpoint:
-        print(f"best checkpoints will be saved to {checkpoint_path}")
+        if args.init_checkpoint is not None:
+            payload = load_checkpoint(model, args.init_checkpoint, args.device)
+            checkpoint_step = payload.get("step", "")
+            main_print(rank, f"initialized training from checkpoint={args.init_checkpoint} checkpoint_step={checkpoint_step}")
 
-    steps_per_epoch = math.ceil(len(train_ds) / args.batch_size)
-    if args.max_steps is not None:
-        total_steps = args.max_steps
-        effective_epochs = total_steps / steps_per_epoch
-        print(f"steps_per_epoch={steps_per_epoch} total_steps={total_steps} effective_epochs={effective_epochs:.3f} (max_steps override)")
-    else:
-        total_steps = math.ceil(args.epochs * steps_per_epoch)
-        effective_epochs = total_steps / steps_per_epoch
-        print(f"steps_per_epoch={steps_per_epoch} epochs={args.epochs} total_steps={total_steps} effective_epochs={effective_epochs:.3f}")
+        if not args.no_save_checkpoint:
+            main_print(rank, f"best checkpoints will be saved to {checkpoint_path}")
 
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    train_iter = cycle(train_loader)
-    model.train()
-    best_score = -float("inf") if args.best_metric != "val_loss" else float("inf")
-    best_metric_values = {}
-    best_step = 0
-    best_state = model_state_dict(model)
-    bad_evals = 0
+        steps_per_epoch = len(train_loader)
+        if args.max_steps is not None:
+            total_steps = args.max_steps
+            effective_epochs = total_steps / steps_per_epoch
+            main_print(rank, f"steps_per_epoch={steps_per_epoch} total_steps={total_steps} effective_epochs={effective_epochs:.3f} (max_steps override)")
+        else:
+            total_steps = math.ceil(args.epochs * steps_per_epoch)
+            effective_epochs = total_steps / steps_per_epoch
+            main_print(rank, f"steps_per_epoch={steps_per_epoch} epochs={args.epochs} total_steps={total_steps} effective_epochs={effective_epochs:.3f}")
 
-    progress = make_progress(range(1, total_steps + 1), total=total_steps, desc="train", initial=0)
-    last_step = 0
-    for step in progress:
-        last_step = step
-        batch = next(train_iter)
-        input_ids = batch["input_ids"].to(args.device)
-        labels = batch["labels"].to(args.device)
-        attention_mask = batch["attention_mask"].to(args.device)
-        logits = model(input_ids, attention_mask=attention_mask)
-        loss = token_loss(logits, labels)
-        opt.zero_grad(set_to_none=True)
-        loss.backward()
-        nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
-        opt.step()
+        opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        train_iter = cycle(train_loader, train_sampler)
+        model.train()
+        best_score = -float("inf") if args.best_metric != "val_loss" else float("inf")
+        best_metric_values = {}
+        best_step = 0
+        best_state = model_state_dict(model) if is_main_process(rank) else None
+        bad_evals = 0
 
-        current_epoch = step / steps_per_epoch
-        if tqdm is not None:
-            progress.set_postfix(
-                loss=f"{loss.item():.4f}",
-                epoch=f"{current_epoch:.2f}/{effective_epochs:.2f}",
-            )
+        progress_iter = range(1, total_steps + 1)
+        progress = make_progress(progress_iter, total=total_steps, desc="train", initial=0) if is_main_process(rank) else progress_iter
+        last_step = 0
+        last_train_loss = None
+        for step in progress:
+            last_step = step
+            batch = next(train_iter)
+            input_ids = batch["input_ids"].to(args.device)
+            labels = batch["labels"].to(args.device)
+            attention_mask = batch["attention_mask"].to(args.device)
+            logits = model(input_ids, attention_mask=attention_mask)
+            loss = token_loss(logits, labels)
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            opt.step()
+            train_loss = reduce_mean_scalar(loss.item(), args.device, is_ddp)
+            last_train_loss = train_loss
 
-        if step == 1 or step % args.eval_every == 0:
-            val_loss, token_acc, exact_acc, final_acc = evaluate(model, val_loader, args.device)
-            val_metrics = {
-                "val_loss": val_loss,
-                "val_token_acc": token_acc,
-                "val_exact_acc": exact_acc,
-                "val_final_acc": final_acc,
-            }
-            score, higher_is_better = best_metric_score(val_metrics, args.best_metric)
-            improved = is_better_score(score, best_score, higher_is_better, args.early_stopping_min_delta)
-            if improved:
-                best_score = score
-                best_metric_values = dict(val_metrics)
-                best_step = step
-                best_state = model_state_dict(model)
-                if not args.no_save_checkpoint:
-                    save_checkpoint(
-                        checkpoint_path,
-                        model,
-                        args,
-                        cfg,
-                        step,
-                        args.best_metric,
-                        best_score,
-                        best_metric_values,
-                    )
-                bad_evals = 0
-            else:
-                bad_evals += 1
-            metrics = {
-                "train/loss": loss.item(),
-                "val/loss": val_loss,
-                "val/token_acc": token_acc,
-                "val/exact_acc": exact_acc,
-                "val/final_acc": final_acc,
-                "best/metric_score": best_score,
-                "best/step": best_step,
-                "best/bad_evals": bad_evals,
-                "step": step,
-            }
-            for name, value in best_metric_values.items():
-                metrics[f"best/{name}"] = value
-            metrics.update(model_debug_metrics(model))
-            if wandb_run is not None:
-                wandb_run.log(metrics, step=step)
-            if tqdm is not None:
+            current_epoch = step / steps_per_epoch
+            if is_main_process(rank) and tqdm is not None:
                 progress.set_postfix(
-                    loss=f"{loss.item():.4f}",
-                    val_loss=f"{val_loss:.4f}",
-                    token_acc=f"{token_acc:.4f}",
-                    exact_acc=f"{exact_acc:.4f}",
-                    final_acc=f"{final_acc:.4f}",
+                    loss=f"{train_loss:.4f}",
                     epoch=f"{current_epoch:.2f}/{effective_epochs:.2f}",
                 )
-            print(
-                f"step={step:05d} train_loss={loss.item():.4f} "
-                f"val_loss={val_loss:.4f} token_acc={token_acc:.4f} "
-                f"exact_acc={exact_acc:.4f} final_acc={final_acc:.4f} "
-                f"best_metric={args.best_metric} best_score={best_score:.4f} best_step={best_step} bad_evals={bad_evals}"
-            )
-            if args.early_stopping and bad_evals >= args.early_stopping_patience:
-                print(
-                    f"early stopping at step={step}; "
-                    f"best_step={best_step} best_metric={args.best_metric} best_score={best_score:.4f}"
-                )
-                break
 
-    load_model_state_dict(model, best_state)
-    test_loss, test_token_acc, test_exact_acc, test_final_acc = evaluate(model, test_loader, args.device)
-    final_metrics = {
-        "test/loss": test_loss,
-        "test/token_acc": test_token_acc,
-        "test/exact_acc": test_exact_acc,
-        "test/final_acc": test_final_acc,
-        "test/best_step": best_step,
-    }
-    final_metrics.update(model_debug_metrics(model))
-    if wandb_run is not None:
-        wandb_run.log(final_metrics, step=last_step)
-    print(
-        f"test best_step={best_step} test_loss={test_loss:.4f} "
-        f"token_acc={test_token_acc:.4f} exact_acc={test_exact_acc:.4f} "
-        f"final_acc={test_final_acc:.4f}"
-    )
-    if wandb_run is not None:
-        wandb_run.finish()
+            stop_training = False
+            if step == 1 or step % args.eval_every == 0:
+                if is_main_process(rank):
+                    val_loss, token_acc, exact_acc, final_acc = evaluate(unwrap_model(model), val_loader, args.device)
+                    val_metrics = {
+                        "val_loss": val_loss,
+                        "val_token_acc": token_acc,
+                        "val_exact_acc": exact_acc,
+                        "val_final_acc": final_acc,
+                    }
+                    score, higher_is_better = best_metric_score(val_metrics, args.best_metric)
+                    improved = is_better_score(score, best_score, higher_is_better, args.early_stopping_min_delta)
+                    if improved:
+                        best_score = score
+                        best_metric_values = dict(val_metrics)
+                        best_step = step
+                        best_state = model_state_dict(model)
+                        if not args.no_save_checkpoint:
+                            save_checkpoint(
+                                checkpoint_path,
+                                model,
+                                args,
+                                cfg,
+                                step,
+                                args.best_metric,
+                                best_score,
+                                best_metric_values,
+                            )
+                        bad_evals = 0
+                    else:
+                        bad_evals += 1
+                    metrics = {
+                        "train/loss": train_loss,
+                        "val/loss": val_loss,
+                        "val/token_acc": token_acc,
+                        "val/exact_acc": exact_acc,
+                        "val/final_acc": final_acc,
+                        "best/metric_score": best_score,
+                        "best/step": best_step,
+                        "best/bad_evals": bad_evals,
+                        "step": step,
+                    }
+                    for name, value in best_metric_values.items():
+                        metrics[f"best/{name}"] = value
+                    metrics.update(model_debug_metrics(model))
+                    if wandb_run is not None:
+                        wandb_run.log(metrics, step=step)
+                    if tqdm is not None:
+                        progress.set_postfix(
+                            loss=f"{train_loss:.4f}",
+                            val_loss=f"{val_loss:.4f}",
+                            token_acc=f"{token_acc:.4f}",
+                            exact_acc=f"{exact_acc:.4f}",
+                            final_acc=f"{final_acc:.4f}",
+                            epoch=f"{current_epoch:.2f}/{effective_epochs:.2f}",
+                        )
+                    print(
+                        f"step={step:05d} train_loss={train_loss:.4f} "
+                        f"val_loss={val_loss:.4f} token_acc={token_acc:.4f} "
+                        f"exact_acc={exact_acc:.4f} final_acc={final_acc:.4f} "
+                        f"best_metric={args.best_metric} best_score={best_score:.4f} best_step={best_step} bad_evals={bad_evals}"
+                    )
+                    if args.early_stopping and bad_evals >= args.early_stopping_patience:
+                        print(
+                            f"early stopping at step={step}; "
+                            f"best_step={best_step} best_metric={args.best_metric} best_score={best_score:.4f}"
+                        )
+                        stop_training = True
+                if is_ddp:
+                    stop_tensor = torch.tensor(int(stop_training), device=args.device)
+                    dist.broadcast(stop_tensor, src=0)
+                    stop_training = bool(stop_tensor.item())
+                if stop_training:
+                    break
+
+        if is_ddp:
+            dist.barrier()
+        if is_main_process(rank):
+            load_model_state_dict(model, best_state)
+            test_loss, test_token_acc, test_exact_acc, test_final_acc = evaluate(unwrap_model(model), test_loader, args.device)
+            final_metrics = {
+                "test/loss": test_loss,
+                "test/token_acc": test_token_acc,
+                "test/exact_acc": test_exact_acc,
+                "test/final_acc": test_final_acc,
+                "test/best_step": best_step,
+                "train/loss": last_train_loss if last_train_loss is not None else "",
+                "best/metric_score": best_score,
+            }
+            final_metrics.update(model_debug_metrics(model))
+            append_result_csv(args, cfg, n_params, "completed", best_step, final_metrics, checkpoint_path, world_size)
+            if wandb_run is not None:
+                wandb_run.log(final_metrics, step=last_step)
+            print(
+                f"test best_step={best_step} test_loss={test_loss:.4f} "
+                f"token_acc={test_token_acc:.4f} exact_acc={test_exact_acc:.4f} "
+                f"final_acc={test_final_acc:.4f}"
+            )
+            if wandb_run is not None:
+                wandb_run.finish()
+        if is_ddp:
+            dist.barrier()
+    finally:
+        cleanup_distributed(is_ddp)

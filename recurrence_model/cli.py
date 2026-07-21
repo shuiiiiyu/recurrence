@@ -95,6 +95,8 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--wandb_entity", type=str, default=None)
     p.add_argument("--wandb_run_name", type=str, default=None)
     p.add_argument("--wandb_dir", type=str, default="wandb")
+    p.add_argument("--results_csv", type=str, default="results/training_results.csv", help="Append final test metrics for each run to this CSV")
+    p.add_argument("--no_save_results", action="store_true", help="Do not append final metrics to results_csv")
     return p
 
 
