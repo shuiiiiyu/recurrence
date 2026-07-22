@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import csv
 import copy
+from contextlib import nullcontext
 from datetime import datetime
 import itertools
 import math
 import os
 import random
+import time
 from argparse import Namespace
 from pathlib import Path
 from typing import Iterable, Tuple
@@ -69,21 +71,88 @@ def cycle(loader: DataLoader, sampler: DistributedSampler | None = None) -> Iter
 
 
 def token_loss(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
-    return F.cross_entropy(logits.reshape(-1, logits.size(-1)), labels.reshape(-1), ignore_index=ignore_label_id)
+    return F.cross_entropy(logits.float().reshape(-1, logits.size(-1)), labels.reshape(-1), ignore_index=ignore_label_id)
 
 
-def best_metric_score(metrics: dict, metric_name: str) -> tuple[float, bool]:
-    if metric_name not in metrics:
-        raise ValueError(f"Unknown best_metric={metric_name}; available metrics: {sorted(metrics)}")
-    score = float(metrics[metric_name])
-    higher_is_better = metric_name != "val_loss"
-    return score, higher_is_better
+def autocast_context(args_or_device, amp: str | None = None):
+    if isinstance(args_or_device, Namespace):
+        device = args_or_device.device
+        amp_mode = args_or_device.amp
+    else:
+        device = str(args_or_device)
+        amp_mode = "none" if amp is None else amp
+    if amp_mode == "bf16" and str(device).startswith("cuda"):
+        return torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+    return nullcontext()
 
 
-def is_better_score(score: float, best_score: float, higher_is_better: bool, min_delta: float) -> bool:
-    if higher_is_better:
-        return score > best_score + min_delta
-    return score < best_score - min_delta
+def best_metric_score(metrics: dict, metric_name: str) -> tuple[tuple[float, ...], tuple[bool, ...]]:
+    metric_specs = {
+        "val_final_acc_then_loss": (("val_final_acc", True), ("val_loss", False)),
+        "val_exact_acc_then_loss": (("val_exact_acc", True), ("val_loss", False)),
+        "val_token_acc_then_loss": (("val_token_acc", True), ("val_loss", False)),
+    }
+    if metric_name in metric_specs:
+        specs = metric_specs[metric_name]
+    elif metric_name in metrics:
+        specs = ((metric_name, metric_name != "val_loss"),)
+    else:
+        raise ValueError(
+            f"Unknown best_metric={metric_name}; available metrics: "
+            f"{sorted(metrics)} plus {sorted(metric_specs)}"
+        )
+    return tuple(float(metrics[name]) for name, _ in specs), tuple(higher for _, higher in specs)
+
+
+def initial_best_score(higher_is_better: tuple[bool, ...]) -> tuple[float, ...]:
+    return tuple(-float("inf") if higher else float("inf") for higher in higher_is_better)
+
+
+def is_better_score(
+    score: tuple[float, ...],
+    best_score: tuple[float, ...],
+    higher_is_better: tuple[bool, ...],
+    min_delta: float,
+) -> bool:
+    for cur, best, higher in zip(score, best_score, higher_is_better):
+        if higher:
+            if cur > best + min_delta:
+                return True
+            if cur < best - min_delta:
+                return False
+        else:
+            if cur < best - min_delta:
+                return True
+            if cur > best + min_delta:
+                return False
+    return False
+
+
+def format_best_score(score: tuple[float, ...]) -> str:
+    if len(score) == 1:
+        return f"{score[0]:.4f}"
+    return "(" + ", ".join(f"{value:.4f}" for value in score) + ")"
+
+
+def format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    hours, rem = divmod(seconds, 3600)
+    minutes, secs = divmod(rem, 60)
+    if hours:
+        return f"{hours:d}h{minutes:02d}m{secs:02d}s"
+    return f"{minutes:d}m{secs:02d}s"
+
+
+def text_progress(step: int, total_steps: int, start_time: float, width: int = 24) -> str:
+    frac = min(1.0, max(0.0, step / max(1, total_steps)))
+    filled = int(round(width * frac))
+    bar = "#" * filled + "-" * (width - filled)
+    elapsed = time.time() - start_time
+    eta = elapsed * (1.0 / frac - 1.0) if frac > 0 else 0.0
+    return (
+        f"progress=[{bar}] {step}/{total_steps} {frac * 100:.1f}% "
+        f"elapsed={format_duration(elapsed)} eta={format_duration(eta)}"
+    )
 
 
 def setup_distributed(args: Namespace) -> tuple[bool, int, int, int, str]:
@@ -223,6 +292,7 @@ def append_result_csv(
         "max_steps": args.max_steps,
         "lr": args.lr,
         "weight_decay": args.weight_decay,
+        "amp": args.amp,
         "seed": args.seed,
         "params": n_params,
         "wandb_project": args.wandb_project,
@@ -270,9 +340,7 @@ def batch_metrics(logits: torch.Tensor, labels: torch.Tensor) -> Tuple[int, int,
 
 
 def make_progress(iterable, **kwargs):
-    if tqdm is None:
-        return iterable
-    return tqdm(iterable, dynamic_ncols=True, **kwargs)
+    return iterable
 
 
 @torch.no_grad()
@@ -280,6 +348,7 @@ def evaluate(
     model: nn.Module,
     loader: DataLoader,
     device: str,
+    amp: str = "none",
     max_batches: int | None = None,
     show_progress: bool = True,
 ) -> Tuple[float, float, float, float]:
@@ -300,8 +369,9 @@ def evaluate(
         input_ids = batch["input_ids"].to(device)
         labels = batch["labels"].to(device)
         attention_mask = batch["attention_mask"].to(device)
-        logits = model(input_ids, attention_mask=attention_mask)
-        loss = token_loss(logits, labels)
+        with autocast_context(device, amp):
+            logits = model(input_ids, attention_mask=attention_mask)
+            loss = token_loss(logits, labels)
         bsz = input_ids.size(0)
         total_loss += loss.item() * bsz
         total_items += bsz
@@ -312,7 +382,7 @@ def evaluate(
         exact_total += et
         final_correct += fc
         final_total += ft
-        if show_progress and tqdm is not None:
+        if show_progress and hasattr(iterator, "set_postfix"):
             iterator.set_postfix(
                 loss=f"{total_loss / max(1, total_items):.4f}",
                 token_acc=f"{token_correct / max(1, token_total):.4f}",
@@ -407,6 +477,7 @@ def train(args: Namespace) -> None:
         n_params = sum(p.numel() for p in unwrap_model(model).parameters())
         main_print(rank, f"dataset={args.dataset} model={args.model} params={n_params/1e6:.2f}M device={args.device}")
         main_print(rank, f"ddp={is_ddp} world_size={world_size} batch_size_per_gpu={args.batch_size} global_batch_size={args.batch_size * world_size}")
+        main_print(rank, f"amp={args.amp}")
         main_print(rank, f"train_samples={len(train_ds)} val_samples={len(val_ds)} test_samples={len(test_ds)}")
         main_print(rank, cfg)
         wandb_run = maybe_init_wandb(args, cfg, n_params) if is_main_process(rank) else None
@@ -419,7 +490,7 @@ def train(args: Namespace) -> None:
                 dist.barrier()
             if is_main_process(rank):
                 print(f"loaded checkpoint={args.eval_checkpoint} checkpoint_step={checkpoint_step}")
-                test_loss, test_token_acc, test_exact_acc, test_final_acc = evaluate(unwrap_model(model), test_loader, args.device)
+                test_loss, test_token_acc, test_exact_acc, test_final_acc = evaluate(unwrap_model(model), test_loader, args.device, amp=args.amp)
                 final_metrics = {
                     "test/loss": test_loss,
                     "test/token_acc": test_token_acc,
@@ -462,7 +533,11 @@ def train(args: Namespace) -> None:
         opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
         train_iter = cycle(train_loader, train_sampler)
         model.train()
-        best_score = -float("inf") if args.best_metric != "val_loss" else float("inf")
+        best_score, higher_is_better = best_metric_score(
+            {"val_loss": 0.0, "val_token_acc": 0.0, "val_exact_acc": 0.0, "val_final_acc": 0.0},
+            args.best_metric,
+        )
+        best_score = initial_best_score(higher_is_better)
         best_metric_values = {}
         best_step = 0
         best_state = model_state_dict(model) if is_main_process(rank) else None
@@ -472,14 +547,16 @@ def train(args: Namespace) -> None:
         progress = make_progress(progress_iter, total=total_steps, desc="train", initial=0) if is_main_process(rank) else progress_iter
         last_step = 0
         last_train_loss = None
+        start_time = time.time()
         for step in progress:
             last_step = step
             batch = next(train_iter)
             input_ids = batch["input_ids"].to(args.device)
             labels = batch["labels"].to(args.device)
             attention_mask = batch["attention_mask"].to(args.device)
-            logits = model(input_ids, attention_mask=attention_mask)
-            loss = token_loss(logits, labels)
+            with autocast_context(args):
+                logits = model(input_ids, attention_mask=attention_mask)
+                loss = token_loss(logits, labels)
             opt.zero_grad(set_to_none=True)
             loss.backward()
             nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
@@ -488,7 +565,7 @@ def train(args: Namespace) -> None:
             last_train_loss = train_loss
 
             current_epoch = step / steps_per_epoch
-            if is_main_process(rank) and tqdm is not None:
+            if is_main_process(rank) and hasattr(progress, "set_postfix"):
                 progress.set_postfix(
                     loss=f"{train_loss:.4f}",
                     epoch=f"{current_epoch:.2f}/{effective_epochs:.2f}",
@@ -497,7 +574,7 @@ def train(args: Namespace) -> None:
             stop_training = False
             if step == 1 or step % args.eval_every == 0:
                 if is_main_process(rank):
-                    val_loss, token_acc, exact_acc, final_acc = evaluate(unwrap_model(model), val_loader, args.device)
+                    val_loss, token_acc, exact_acc, final_acc = evaluate(unwrap_model(model), val_loader, args.device, amp=args.amp)
                     val_metrics = {
                         "val_loss": val_loss,
                         "val_token_acc": token_acc,
@@ -531,17 +608,19 @@ def train(args: Namespace) -> None:
                         "val/token_acc": token_acc,
                         "val/exact_acc": exact_acc,
                         "val/final_acc": final_acc,
-                        "best/metric_score": best_score,
+                        "best/metric_score": best_score[0],
                         "best/step": best_step,
                         "best/bad_evals": bad_evals,
                         "step": step,
                     }
+                    if len(best_score) > 1:
+                        metrics["best/tiebreak_score"] = best_score[1]
                     for name, value in best_metric_values.items():
                         metrics[f"best/{name}"] = value
                     metrics.update(model_debug_metrics(model))
                     if wandb_run is not None:
                         wandb_run.log(metrics, step=step)
-                    if tqdm is not None:
+                    if hasattr(progress, "set_postfix"):
                         progress.set_postfix(
                             loss=f"{train_loss:.4f}",
                             val_loss=f"{val_loss:.4f}",
@@ -551,15 +630,18 @@ def train(args: Namespace) -> None:
                             epoch=f"{current_epoch:.2f}/{effective_epochs:.2f}",
                         )
                     print(
+                        f"{text_progress(step, total_steps, start_time)} "
                         f"step={step:05d} train_loss={train_loss:.4f} "
                         f"val_loss={val_loss:.4f} token_acc={token_acc:.4f} "
                         f"exact_acc={exact_acc:.4f} final_acc={final_acc:.4f} "
-                        f"best_metric={args.best_metric} best_score={best_score:.4f} best_step={best_step} bad_evals={bad_evals}"
+                        f"best_metric={args.best_metric} best_score={format_best_score(best_score)} "
+                        f"best_step={best_step} bad_evals={bad_evals}"
                     )
                     if args.early_stopping and bad_evals >= args.early_stopping_patience:
                         print(
                             f"early stopping at step={step}; "
-                            f"best_step={best_step} best_metric={args.best_metric} best_score={best_score:.4f}"
+                            f"best_step={best_step} best_metric={args.best_metric} "
+                            f"best_score={format_best_score(best_score)}"
                         )
                         stop_training = True
                 if is_ddp:
@@ -573,7 +655,7 @@ def train(args: Namespace) -> None:
             dist.barrier()
         if is_main_process(rank):
             load_model_state_dict(model, best_state)
-            test_loss, test_token_acc, test_exact_acc, test_final_acc = evaluate(unwrap_model(model), test_loader, args.device)
+            test_loss, test_token_acc, test_exact_acc, test_final_acc = evaluate(unwrap_model(model), test_loader, args.device, amp=args.amp)
             final_metrics = {
                 "test/loss": test_loss,
                 "test/token_acc": test_token_acc,
@@ -581,8 +663,10 @@ def train(args: Namespace) -> None:
                 "test/final_acc": test_final_acc,
                 "test/best_step": best_step,
                 "train/loss": last_train_loss if last_train_loss is not None else "",
-                "best/metric_score": best_score,
+                "best/metric_score": best_score[0],
             }
+            if len(best_score) > 1:
+                final_metrics["best/tiebreak_score"] = best_score[1]
             final_metrics.update(model_debug_metrics(model))
             append_result_csv(args, cfg, n_params, "completed", best_step, final_metrics, checkpoint_path, world_size)
             if wandb_run is not None:

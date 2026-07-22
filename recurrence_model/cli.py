@@ -80,10 +80,24 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--weight_decay", type=float, default=weight_decay)
     p.add_argument("--grad_clip", type=float, default=grad_clip)
     p.add_argument("--eval_every", type=int, default=eval_every)
+    p.add_argument("--amp", choices=["none", "bf16"], default="none", help="Mixed precision mode; bf16 is recommended on A100 GPUs")
     p.add_argument("--early_stopping", action="store_true", default=early_stopping)
     p.add_argument("--early_stopping_patience", type=int, default=early_stopping_patience)
     p.add_argument("--early_stopping_min_delta", type=float, default=early_stopping_min_delta)
-    p.add_argument("--best_metric", choices=["val_loss", "val_token_acc", "val_exact_acc", "val_final_acc"], default=best_metric, help="Validation metric used to select the checkpoint for final test")
+    p.add_argument(
+        "--best_metric",
+        choices=[
+            "val_loss",
+            "val_token_acc",
+            "val_exact_acc",
+            "val_final_acc",
+            "val_token_acc_then_loss",
+            "val_exact_acc_then_loss",
+            "val_final_acc_then_loss",
+        ],
+        default=best_metric,
+        help="Validation metric used to select the checkpoint for final test",
+    )
     p.add_argument("--checkpoint_dir", type=str, default="checkpoints", help="Directory for best-checkpoint files")
     p.add_argument("--no_save_checkpoint", action="store_true", help="Do not write the best checkpoint to disk during training")
     p.add_argument("--init_checkpoint", type=str, default=None, help="Load model weights from a checkpoint before continuing training")
