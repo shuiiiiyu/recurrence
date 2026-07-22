@@ -18,6 +18,6 @@ Step recurrence models directly reuse code or core implementations from existing
 
 Training and evaluation are currently running on two state-tracking benchmark families:
 
-Permutation: S3 and S5 tasks with sequence lengths 50 and 100. Each setting uses 10k-scale data.
+Permutation: S3 and S5 tasks with sequence lengths 50 and 100. Each setting uses 100k-scale data.
 
 bAbI: 20 tasks with different difficulty levels. Each task uses the en-10k split.
